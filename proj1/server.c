@@ -34,7 +34,7 @@ int main (int argc, char* argv[]){
     int len_cli = sizeof(addr_cli);
     
     sockfd_listen = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd_listen == -1){
+    if (sockfd_listen < 0){
         fprintf(stderr, "socket creation failure: %s\n", strerror(errno));
         exit(0);
     }
@@ -45,7 +45,7 @@ int main (int argc, char* argv[]){
     addr_serv.sin_addr.s_addr = htonl(INADDR_ANY); //IP of server
     addr_serv.sin_port = htons(port);
     
-    if (bind(sockfd_listen, (struct sockaddr*)&addr_serv, sizeof(addr_serv)) == -1){
+    if (bind(sockfd_listen, (struct sockaddr*)&addr_serv, sizeof(addr_serv)) < 0){
         fprintf(stderr, "socket binding failure: %s\n", strerror(errno));
         exit(0);
     }
