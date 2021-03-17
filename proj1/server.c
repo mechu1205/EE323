@@ -1,4 +1,5 @@
-#include <stdio.h> 
+#include <stdio.h>
+#include <ctype.h>
 #include <netdb.h> 
 #include <netinet/in.h> 
 #include <stdlib.h> 
@@ -11,6 +12,7 @@
 #include <signal.h>
 
 #define QUEUE_SIZE 10
+#define MSG_SIZE 1000000
 
 int main (int argc, char* argv[]){
     // Argument Parsing
@@ -56,7 +58,7 @@ int main (int argc, char* argv[]){
     signal(SIGCHLD, SIG_IGN);
     while(1){
         sockfd_conn = accept(sockfd_listen, (struct sockaddr*)&addr_cli, &len_cli);
-        
+        fprintf(stdout, "connection accepted, forking process..\n"); fflush(stdout); // debug line
         int pid = fork();
         if (pid == -1){
             fprintf(stderr, "fork failure: %s\n", strerror(errno));
@@ -64,8 +66,40 @@ int main (int argc, char* argv[]){
         if (pid == 0){
             // forked thread
             // do your stuff
+            
+            char *msg = malloc(MSG_SIZE);
+            
+            if (recv(sockfd_conn, msg, MSG_SIZE, 0) < 0){
+                fprintf(stderr, "reception failure: %s\n", strerror(errno));
+                exit(0);
+            }
+            fprintf(stdout, "msg received\n"); fflush(stdout); // debug line
+            
+            // TODO: Checksum
+            
+            uint8_t op = (uint8_t) ntohs ( ((uint16_t) *(uint8_t*)msg ) <<8 );
+            uint8_t shift = (uint8_t) ntohs ( ((uint16_t) *(uint8_t*)(msg+1)) <<8 );
+            uint32_t len = (uint32_t) ntohl (*(uint32_t*)(msg+4));
+            fprintf(stdout, "op, shift, len: %d, %d, %d\n", op,shift,len); fflush(stdout); // debug line
+            shift = (uint8_t)shift%26;
+            
+            // Execute Caesar Shift
+            // "convert all uppercase letters to lowercase, and perform Caesar cipher only on alphabets"
+            for (int i=8; i < len; i++){
+                if (isalpha(*(msg + i))){
+                    if (isupper(*(msg+i))) msg[i] = (char)tolower(*(msg+i));
+                    if (op) {
+                        msg[i] = (char) (msg[i] + shift);
+                        if (!islower(msg[i])) (char) (msg[i] - 26);
+                    }else {
+                        msg[i] = (char) (msg[i] - shift);
+                        if (!islower(msg[i])) (char) (msg[i] + 26);
+                    }
+                }
+            }
+            send (sockfd_conn, msg, len, 0);
+            free(msg);
         }
-        
-        close(sockfd_conn);
+        close (sockfd_conn);
     }
 }
