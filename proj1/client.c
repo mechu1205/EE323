@@ -17,6 +17,61 @@
 
 #define PORT 8888
 
+uint16_t checksum(const char *buf, uint32_t size){
+    // https://locklessinc.com/articles/tcp_checksum/
+	uint64_t sum = 0;
+	const uint64_t *b = (uint64_t *) buf;
+
+	uint32_t t1, t2;
+	uint16_t t3, t4;
+
+	/* Main loop - 8 bytes at a time */
+	while (size >= sizeof(uint64_t))
+	{
+		uint64_t s = *b++;
+		sum += s;
+		if (sum < s) sum++;
+		size -= 8;
+	}
+
+	/* Handle tail less than 8-bytes long */
+	buf = (const char *) b;
+	if (size & 4)
+	{
+		uint32_t s = *(uint32_t *)buf;
+		sum += s;
+		if (sum < s) sum++;
+		buf += 4;
+	}
+
+	if (size & 2)
+	{
+		uint16_t s = *(uint16_t *) buf;
+		sum += s;
+		if (sum < s) sum++;
+		buf += 2;
+	}
+
+	if (size)
+	{
+		uint8_t s = *(uint8_t *) buf;
+		sum += s;
+		if (sum < s) sum++;
+	}
+
+	/* Fold down to 16 bits */
+	t1 = sum;
+	t2 = sum >> 32;
+	t1 += t2;
+	if (t1 < t2) t1++;
+	t3 = t1;
+	t4 = t1 >> 16;
+	t3 += t4;
+	if (t3 < t4) t3++;
+
+	return ~t3;
+}
+
 int main (int argc, char* argv[]){
     // argument parser, use getopt
     // -o: op, -s: shift, -p: port, -h: host
@@ -59,38 +114,33 @@ int main (int argc, char* argv[]){
         exit(0);
     }
     
-    fprintf(stdout, "host, port, op, shift: %s, %d, %d, %d\n", host,port,op,shift); fflush(stdout); // debug line
+    // fprintf(stdout, "host, port, op, shift: %s, %d, %d, %d\n", host,port,op,shift); fflush(stdout); // debug line
     
     char *buffer_in = malloc(BUFFER_SIZE);
-    char *buffers_out;
-    // char msg[MSG_SIZE];
     char *msg;
     int read_size = 0;
-    uint32_t len = 0;
-    int index_msg = 0;
     
     // Loop until EOF is reached
     while(read_size = read(STDIN_FILENO, buffer_in, BUFFER_SIZE)){
-        fprintf(stdout, "loop start\n"); fflush(stdout); // debug line
-        fprintf(stdout, "%d Bytes read\n",read_size); fflush(stdout); // debug line
-        len = read_size + HEADER_SIZE;
-        msg = malloc(len);
-        len = htonl(len);
+        // fprintf(stdout, "loop start\n"); fflush(stdout); // debug line
+        // fprintf(stdout, "%d Bytes read\n",read_size); fflush(stdout); // debug line
+        uint32_t len_h = read_size + HEADER_SIZE;
+        msg = malloc(len_h);
+        uint32_t len_n = htonl(len_h);
         memcpy(msg, &op, sizeof(op));
         // fprintf(stdout, "op: %d (should be %d)\n", *((uint8_t*)msg), op); fflush(stdout); // debug line
         memcpy(msg+1, &shift, sizeof(shift));
         // fprintf(stdout, "shift: %d (should be %d)\n", *((uint8_t*)(msg+1)), shift); fflush(stdout); // debug line
-        memcpy(msg+4, &len, 4);
+        memcpy(msg+4, &len_n, 4);
         // fprintf(stdout, "len: %d (should be %d)\n", *((uint32_t*)(msg+4)), len); fflush(stdout); // debug line
         memcpy(msg+8, buffer_in, read_size);
         // fprintf(stdout, "memcpy finished\n"); fflush(stdout); // debug line
         
-        // TODO: checksum
+        uint16_t check = checksum(msg, read_size + HEADER_SIZE);
+        memcpy(msg+2, &check, sizeof(check));
         
         // Socket Creation
-        int sockfd;
-        
-        sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        int sockfd = socket(AF_INET, SOCK_STREAM, 0);
         if (sockfd == -1){
             fprintf(stderr, "socket creation failure: %s\n", strerror(errno));
             exit(0);
@@ -100,7 +150,7 @@ int main (int argc, char* argv[]){
         inet_pton(AF_INET, host, &addr_host.sin_addr);
         addr_host.sin_port = port;
         
-        fprintf(stdout, "attempting connection..\n"); fflush(stdout); // debug line
+        // fprintf(stdout, "attempting connection..\n"); fflush(stdout); // debug line
         if (connect(sockfd, (struct sockaddr *)&addr_host, sizeof(addr_host)) < 0){
             fprintf(stderr, "socket connection failure: %s\n", strerror(errno));
             exit(0);
@@ -108,30 +158,33 @@ int main (int argc, char* argv[]){
         // Connection Established
         
         // Send message
-        fprintf(stdout, "connection established, sending msg..\n"); fflush(stdout); // debug line
+        // fprintf(stdout, "connection established, sending msg..\n"); fflush(stdout); // debug line
         send (sockfd, msg, read_size + HEADER_SIZE, 0);
         
         // Wait for response (before reading from stdin or sending another msg)
-        fprintf(stdout, "msg sent, waiting for response..\n"); fflush(stdout); // debug line
+        // fprintf(stdout, "msg sent, waiting for response..\n"); fflush(stdout); // debug line
         if (recv(sockfd, msg, read_size + HEADER_SIZE, 0) < 0){
             fprintf(stderr, "reception failure: %s\n", strerror(errno));
             exit(0);
         }
         
-        // TODO: Checksum
+        // Checksum verification
+        len_h = (uint32_t) ntohl (*(uint32_t*)(msg+4));
+        if ( checksum(msg, len_h)){
+            // Checksum verification failure
+            fprintf(stderr, "checksum verfication failure\n");
+            continue;
+        }
         
-        // Print msg to stdout and flush buffer
-        len = (uint32_t) ntohl (*(uint32_t*)(msg+4));
-        
-        fprintf(stdout, "msg received, printing msg..\n"); fflush(stdout); // debug line
-        fwrite(msg+8, len - HEADER_SIZE, 1, stdout); 
-        fprintf(stdout, "\nend of msg\n"); fflush(stdout); // debug line
+        // fprintf(stdout, "msg received, printing msg..\n"); fflush(stdout); // debug line
+        fwrite(msg+8, len_h - HEADER_SIZE, 1, stdout); 
+        // fprintf(stdout, "\nend of msg\n"); fflush(stdout); // debug line
         free(msg);
-        fprintf(stdout, "closing connection..\n"); fflush(stdout); // debug line
+        // fprintf(stdout, "closing connection..\n"); fflush(stdout); // debug line
         close(sockfd);
-        fprintf(stdout, "connection closed, exiting loop\n"); fflush(stdout); // debug line
+        // fprintf(stdout, "connection closed, exiting loop\n"); fflush(stdout); // debug line
     }
-    fprintf(stdout, "exiting..\n"); fflush(stdout); // debug line
+    // fprintf(stdout, "exiting..\n"); fflush(stdout); // debug line
     free(buffer_in);
     return 0;
 }

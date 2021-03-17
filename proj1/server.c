@@ -14,6 +14,61 @@
 #define QUEUE_SIZE 10
 #define MSG_SIZE 1000000
 
+uint16_t checksum(const char *buf, uint32_t size){
+    // https://locklessinc.com/articles/tcp_checksum/
+	uint64_t sum = 0;
+	const uint64_t *b = (uint64_t *) buf;
+
+	uint32_t t1, t2;
+	uint16_t t3, t4;
+
+	/* Main loop - 8 bytes at a time */
+	while (size >= sizeof(uint64_t))
+	{
+		uint64_t s = *b++;
+		sum += s;
+		if (sum < s) sum++;
+		size -= 8;
+	}
+
+	/* Handle tail less than 8-bytes long */
+	buf = (const char *) b;
+	if (size & 4)
+	{
+		uint32_t s = *(uint32_t *)buf;
+		sum += s;
+		if (sum < s) sum++;
+		buf += 4;
+	}
+
+	if (size & 2)
+	{
+		uint16_t s = *(uint16_t *) buf;
+		sum += s;
+		if (sum < s) sum++;
+		buf += 2;
+	}
+
+	if (size)
+	{
+		uint8_t s = *(uint8_t *) buf;
+		sum += s;
+		if (sum < s) sum++;
+	}
+
+	/* Fold down to 16 bits */
+	t1 = sum;
+	t2 = sum >> 32;
+	t1 += t2;
+	if (t1 < t2) t1++;
+	t3 = t1;
+	t4 = t1 >> 16;
+	t3 += t4;
+	if (t3 < t4) t3++;
+
+	return ~t3;
+}
+
 int main (int argc, char* argv[]){
     // Argument Parsing
     int input_correct = 0;
@@ -58,30 +113,34 @@ int main (int argc, char* argv[]){
     signal(SIGCHLD, SIG_IGN);
     while(1){
         sockfd_conn = accept(sockfd_listen, (struct sockaddr*)&addr_cli, &len_cli);
-        fprintf(stdout, "connection accepted, forking process..\n"); fflush(stdout); // debug line
+        // fprintf(stdout, "connection accepted, forking process..\n"); fflush(stdout); // debug line
         int pid = fork();
         if (pid == -1){
             fprintf(stderr, "fork failure: %s\n", strerror(errno));
         }
         if (pid == 0){
             // forked thread
-            // do your stuff
-            
             char *msg = malloc(MSG_SIZE);
             
             if (recv(sockfd_conn, msg, MSG_SIZE, 0) < 0){
                 fprintf(stderr, "reception failure: %s\n", strerror(errno));
                 exit(0);
             }
-            fprintf(stdout, "msg received\n"); fflush(stdout); // debug line
             
-            // TODO: Checksum
+            // fprintf(stdout, "msg received\n"); fflush(stdout); // debug line
             
+            // Parse Header
             uint8_t op = (uint8_t) ntohs ( ((uint16_t) *(uint8_t*)msg ) <<8 );
             uint8_t shift = (uint8_t) ntohs ( ((uint16_t) *(uint8_t*)(msg+1)) <<8 );
             uint32_t len = (uint32_t) ntohl (*(uint32_t*)(msg+4));
-            fprintf(stdout, "op, shift, len: %d, %d, %d\n", op,shift,len); fflush(stdout); // debug line
+            // fprintf(stdout, "op, shift, len: %d, %d, %d\n", op,shift,len); fflush(stdout); // debug line
             shift = (uint8_t)shift%26;
+            
+            if ( checksum(msg, len)){
+                // Checksum verification failure
+                fprintf(stderr, "checksum verfication failure\n");
+                continue;
+            }
             
             // Execute Caesar Shift
             // "convert all uppercase letters to lowercase, and perform Caesar cipher only on alphabets"
@@ -90,16 +149,24 @@ int main (int argc, char* argv[]){
                     if (isupper(*(msg+i))) msg[i] = (char)tolower(*(msg+i));
                     if (op) {
                         msg[i] = (char) (msg[i] + shift);
-                        if (!islower(msg[i])) (char) (msg[i] - 26);
+                        if (!islower(msg[i])) msg[i] = (char) (msg[i] - 26);
                     }else {
                         msg[i] = (char) (msg[i] - shift);
-                        if (!islower(msg[i])) (char) (msg[i] + 26);
+                        if (!islower(msg[i])) msg[i] = (char) (msg[i] + 26);
                     }
                 }
             }
+            
+            // Recalculate checksum
+            bzero((void *)(msg+2), 2);
+            uint16_t check = checksum(msg, len);
+            memcpy(msg+2, &check, sizeof(check));
+            
+            // Send encrypted/decrypted msg back to the client
             send (sockfd_conn, msg, len, 0);
             free(msg);
         }
+        // Close connection
         close (sockfd_conn);
     }
 }
