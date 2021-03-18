@@ -12,7 +12,7 @@
 #include <signal.h>
 
 #define QUEUE_SIZE 10
-#define MSG_SIZE 10000000
+#define MSG_SIZE 10000000 //10M
 #define HEADER_SIZE 8
 
 uint16_t checksum(const char *buf, uint32_t size){
@@ -83,7 +83,7 @@ int main (int argc, char* argv[]){
     if (argc != 3) input_correct = 0;
     if (input_correct==0) {
         fprintf(stderr, "wrong input format\n");
-        exit(0);
+        exit(-1);
     }
     
     // Socket Creation
@@ -94,7 +94,7 @@ int main (int argc, char* argv[]){
     sockfd_listen = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd_listen < 0){
         fprintf(stderr, "socket creation failure: %s\n", strerror(errno));
-        exit(0);
+        exit(-1);
     }
     
     // Socket Binding
@@ -105,7 +105,7 @@ int main (int argc, char* argv[]){
     
     if (bind(sockfd_listen, (struct sockaddr*)&addr_serv, sizeof(addr_serv)) < 0){
         fprintf(stderr, "socket binding failure: %s\n", strerror(errno));
-        exit(0);
+        exit(-1);
     }
     
     int state_listen = 0;
@@ -159,7 +159,13 @@ int main (int argc, char* argv[]){
                 // Checksum verification failure
                 fprintf(stderr, "checksum verfication failure: %#X\n", ck);
                 close (sockfd_conn);
-                continue;
+                exit(-1);
+            }
+            
+            if (op>1){
+                fprintf(stderr, "incorrect op value: %dX\n", op);
+                close (sockfd_conn);
+                exit(-1);
             }
             
             // Execute Caesar Shift
@@ -191,4 +197,5 @@ int main (int argc, char* argv[]){
         // Close connection
         close (sockfd_conn);
     }
+    return 0; // never reached
 }

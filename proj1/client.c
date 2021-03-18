@@ -97,7 +97,12 @@ int main (int argc, char* argv[]){
                 input_correct ++;
                 break;
             case 'o':
-                op = (uint8_t)(htons(atoi(optarg))>>8);
+                op = atoi(optarg);
+                if (op!=1 & op!=0){
+                    fprintf(stderr, "wrong input format\n");
+                    exit(0);
+                }
+                op = (uint8_t)(htons(op)>>8);
                 input_correct ++;
                 break;
             case 's':
