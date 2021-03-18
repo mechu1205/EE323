@@ -26,7 +26,15 @@ Finally, the client closes the socket, and, if `EOF` has not been reached at `st
 
 ## Server Implementation
 
-The server parses the user arguments and retrieves the `port` value to use.
+The server parses the user arguments and retrieves the `port` value to use. It creates a sockets and invokes the `listen` function, getting ready to receive incoming messages.     
+Right after calling the `listen` function, the server enters an infinite loop, calling and waiting for the return of the `accept` function.     
+When the `accept` function returns, i.e. a connection is made, the server does a `fork` and creates a child thread.     
+In the child thread, the server receives the message from the client. The message is temporarily stored in `buffer_recv` before being orderly copied to `msg`.      
+This part is very similiar to what the client does when receiving the response from the server, but the difference is that the server does not know th e length of the entire message in advance. Therefore, when the first `HEADER_SIZE` bytes of the message is received, it the server parses the header to retrieve the supposed length of the message. Thus the server can wait until it receives the entire message, and move on to the next step without wasting any more time.     
+After the entire message has been received and moved to `msg`, the server verifies the `op` code and checksum of the `msg`. It also retrieves the `shift` value stored inside the header.       
+Now the server performs the Caesar Shift by iterating through the string content of `msg` and converting alphabets according to `op` and `shift`.       
+When the shifting is done, the server clears and recalculates the checksum according to the altered contents of the `msg`.      
+Finally, `msg` is sent back to the client, and then the closes the connection, before existing. Thus the child process is terminated, so that the parent process can reap it.
 
 ## Checksum Creation and Verification
 
