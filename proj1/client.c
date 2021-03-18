@@ -11,7 +11,7 @@
 #include <unistd.h>
 #include <signal.h>
 
-#define MSG_SIZE 1000000 //10M = 10000000
+#define MSG_SIZE 1000000 //1M
 #define HEADER_SIZE 8
 #define BUFFER_SIZE (MSG_SIZE-HEADER_SIZE)
 

@@ -12,7 +12,7 @@
 #include <signal.h>
 
 #define QUEUE_SIZE 10
-#define MSG_SIZE 1000000
+#define MSG_SIZE 10000000
 #define HEADER_SIZE 8
 
 uint16_t checksum(const char *buf, uint32_t size){
