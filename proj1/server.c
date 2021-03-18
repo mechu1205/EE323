@@ -12,7 +12,8 @@
 #include <signal.h>
 
 #define QUEUE_SIZE 10
-#define MSG_SIZE 10000
+#define MSG_SIZE 1000000
+#define HEADER_SIZE 8
 
 uint16_t checksum(const char *buf, uint32_t size){
     // https://locklessinc.com/articles/tcp_checksum/
@@ -113,7 +114,7 @@ int main (int argc, char* argv[]){
     signal(SIGCHLD, SIG_IGN);
     while(1){
         sockfd_conn = accept(sockfd_listen, (struct sockaddr*)&addr_cli, &len_cli);
-        fprintf(stdout, "connection accepted, forking process..\n"); fflush(stdout); // debug line
+        // fprintf(stdout, "connection accepted, forking process..\n"); fflush(stdout); // debug line
         int pid = fork();
         if (pid == -1){
             fprintf(stderr, "fork failure: %s\n", strerror(errno));
@@ -121,38 +122,50 @@ int main (int argc, char* argv[]){
         if (pid == 0){
             // forked thread
             char *msg = malloc(MSG_SIZE);
+            char *buffer_recv = malloc(MSG_SIZE);
             bzero((void *)msg, MSG_SIZE);
             
-            if (recv(sockfd_conn, msg, MSG_SIZE, 0) < 0){
-                fprintf(stderr, "reception failure: %s\n", strerror(errno));
-                exit(0);
-            }
-            
-            fprintf(stdout, "msg received\n"); fflush(stdout); // debug line
+            int len_recv = 0;
+            int len_msg = 0;
+            uint32_t len = 0;
+            do {
+                len_recv = recv(sockfd_conn, buffer_recv, MSG_SIZE, 0);
+                if (len_recv < 0){
+                    fprintf(stderr, "reception failure: %s\n", strerror(errno));
+                    exit(-1);
+                }
+                memcpy(msg + len_msg, buffer_recv, len_recv);
+                len_msg += len_recv;
+                // fprintf(stdout, "received %d B (total %d B)\n", len_recv, len_msg); fflush(stdout);
+                
+                if (!len & (len_msg >= HEADER_SIZE)){
+                    // If the Header is fully received,
+                    // Parse it to get the length of the entire msg 
+                    len = (uint32_t) ntohl (*(uint32_t*)(msg+4));
+                }
+            }while (!len | (len_msg < len));
             
             // Parse Header
             uint8_t op = (uint8_t) ntohs ( ((uint16_t) *(uint8_t*)msg ) <<8 );
             uint8_t shift = (uint8_t) ntohs ( ((uint16_t) *(uint8_t*)(msg+1)) <<8 );
-            uint32_t len = (uint32_t) ntohl (*(uint32_t*)(msg+4));
-            fprintf(stdout, "op, shift, len: %d, %d, %d\n", op,shift,len); fflush(stdout); // debug line
-            shift = (uint8_t)shift%26;
+            len = (uint32_t) ntohl (*(uint32_t*)(msg+4)); // duplicate
+            // fprintf(stdout, "op, shift, len: %d, %d, %d\n", op,shift,len); fflush(stdout); // debug line
+            shift = (uint8_t)shift%26; // shift is now in range [0, 26]
             
             bzero((void *)(msg + len), MSG_SIZE - len);
             
-            // uint16_t ck = checksum(msg, len);
-            // if (ck ){
-            //     // Checksum verification failure
-            //     fprintf(stderr, "checksum verfication failure: %#X\n", ck);
-            //     close (sockfd_conn);
-            //     continue;
-            // }
+            uint16_t ck = checksum(msg, len);
+            if (ck ){
+                // Checksum verification failure
+                fprintf(stderr, "checksum verfication failure: %#X\n", ck);
+                close (sockfd_conn);
+                continue;
+            }
             
             // Execute Caesar Shift
             // "convert all uppercase letters to lowercase, and perform Caesar cipher only on alphabets"
+            // shift is in range [0, 26]
             for (int i=8; i < len; i++){
-                if (i%1 == 0){
-                    fprintf(stdout,"msg[%d] : %c(%d)",i, msg[i], (int)msg[i]);fflush(stdout);
-                }
                 if (isalpha(*(msg + i))){
                     if (isupper(*(msg+i))) msg[i] = (char)tolower(*(msg+i));
                     if (op) {
@@ -163,12 +176,8 @@ int main (int argc, char* argv[]){
                         if (!islower(msg[i])) msg[i] = (char) (msg[i] - 26);
                     }
                 }
-                if (i%1 == 0){
-                    fprintf(stdout," -> %c(%d)\n", msg[i], (int)msg[i]);fflush(stdout);
-                }
             }
-            fwrite(msg + 8, len - 8, 1, stdout); 
-            
+                        
             // Recalculate checksum
             bzero((void *)(msg+2), 2);
             uint16_t check = checksum(msg, len);
@@ -177,6 +186,7 @@ int main (int argc, char* argv[]){
             // Send encrypted/decrypted msg back to the client
             send (sockfd_conn, msg, len, 0);
             free(msg);
+            free(buffer_recv);
         }
         // Close connection
         close (sockfd_conn);

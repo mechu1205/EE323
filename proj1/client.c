@@ -175,7 +175,7 @@ int main (int argc, char* argv[]){
 
         // read sockfd to buffer_recv, and move it to msg        
         do {
-            len_recv = recv(sockfd, buffer_recv, BUFFER_SIZE, 0);
+            len_recv = recv(sockfd, buffer_recv, MSG_SIZE, 0);
             if (len_recv < 0){
                 fprintf(stderr, "reception failure: %s\n", strerror(errno));
                 exit(-1);
