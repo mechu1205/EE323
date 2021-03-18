@@ -118,14 +118,18 @@ int main (int argc, char* argv[]){
     
     char *buffer_in = malloc(BUFFER_SIZE);
     char *msg;
+    char *buffer_recv = malloc(MSG_SIZE);
     int read_size = 0;
     
     // Loop until EOF is reached
-    while(read_size = read(STDIN_FILENO, buffer_in, BUFFER_SIZE)){
+    while(read_size = read(STDIN_FILENO, buffer_in, BUFFER_SIZE) ){
+        bzero(buffer_recv, MSG_SIZE);
+        
         // fprintf(stdout, "loop start\n"); fflush(stdout); // debug line
         // fprintf(stdout, "%d Bytes read\n",read_size); fflush(stdout); // debug line
         uint32_t len_h = read_size + HEADER_SIZE;
         msg = malloc(len_h);
+        bzero(msg, len_h);
         uint32_t len_n = htonl(len_h);
         memcpy(msg, &op, sizeof(op));
         // fprintf(stdout, "op: %d (should be %d)\n", *((uint8_t*)msg), op); fflush(stdout); // debug line
@@ -143,7 +147,7 @@ int main (int argc, char* argv[]){
         int sockfd = socket(AF_INET, SOCK_STREAM, 0);
         if (sockfd == -1){
             fprintf(stderr, "socket creation failure: %s\n", strerror(errno));
-            exit(0);
+            exit(-1);
         }
         
         addr_host.sin_family = AF_INET; //IPv4 protocol
@@ -153,9 +157,8 @@ int main (int argc, char* argv[]){
         // fprintf(stdout, "attempting connection..\n"); fflush(stdout); // debug line
         if (connect(sockfd, (struct sockaddr *)&addr_host, sizeof(addr_host)) < 0){
             fprintf(stderr, "socket connection failure: %s\n", strerror(errno));
-            exit(0);
+            exit(-1);
         }
-        // Connection Established
         
         // Send message
         // fprintf(stdout, "connection established, sending msg..\n"); fflush(stdout); // debug line
@@ -163,10 +166,25 @@ int main (int argc, char* argv[]){
         
         // Wait for response (before reading from stdin or sending another msg)
         // fprintf(stdout, "msg sent, waiting for response..\n"); fflush(stdout); // debug line
-        if (recv(sockfd, msg, read_size + HEADER_SIZE, 0) < 0){
-            fprintf(stderr, "reception failure: %s\n", strerror(errno));
-            exit(0);
-        }
+        
+        int len_msg = 0;
+        int len_recv = 0;
+        free(msg);
+        msg = malloc(MSG_SIZE);
+        bzero(msg, MSG_SIZE);
+
+        // read sockfd to buffer_recv, and move it to msg        
+        do {
+            len_recv = recv(sockfd, buffer_recv, BUFFER_SIZE, 0);
+            if (len_recv < 0){
+                fprintf(stderr, "reception failure: %s\n", strerror(errno));
+                exit(-1);
+            }
+            memcpy(msg + len_msg, buffer_recv, len_recv);
+            len_msg += len_recv;
+            // fprintf(stdout, "received %d B (total %d B)\n", len_recv, len_msg); fflush(stdout);
+        }while (len_msg <  read_size + HEADER_SIZE);
+        
         
         // Checksum verification
         len_h = (uint32_t) ntohl (*(uint32_t*)(msg+4));
@@ -177,14 +195,16 @@ int main (int argc, char* argv[]){
         }
         
         // fprintf(stdout, "msg received, printing msg..\n"); fflush(stdout); // debug line
-        fwrite(msg+8, len_h - HEADER_SIZE, 1, stdout); 
+        fwrite(msg + HEADER_SIZE, len_h - HEADER_SIZE, 1, stdout); fflush(stdout);
         // fprintf(stdout, "\nend of msg\n"); fflush(stdout); // debug line
         free(msg);
         // fprintf(stdout, "closing connection..\n"); fflush(stdout); // debug line
         close(sockfd);
         // fprintf(stdout, "connection closed, exiting loop\n"); fflush(stdout); // debug line
+        
     }
     // fprintf(stdout, "exiting..\n"); fflush(stdout); // debug line
     free(buffer_in);
+    free(buffer_recv);
     return 0;
 }
