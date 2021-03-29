@@ -167,16 +167,18 @@ int main (int argc, char* argv[]){
             }while (ptr_eoh == NULL);
             // Delete everything after header
             bzero(ptr_eoh + strlen(eoh), BUFFER_SIZE_MEDIUM - (ptr_eoh - msg + strlen(eoh)));
-            // printf("<MESSAGE>\n%s</MESSAGE>\n", msg); fflush(stdout); // debug
+            fprintf(stdout, "<MESSAGE RECEIVED>\n%s</MESSAGE RECEIVED>\n", msg); fflush(stdout); // debug
             
             // Parse Message
             // Parser for "GET"
             char *ptr;
             char *get = "GET";
-            if ((memcpy(msg, get, strlen(get)) != 0) || !isspace(msg[strlen(get)]) ){
+            if ((memcmp(msg, get, strlen(get)) != 0) || !isspace(msg[strlen(get)]) ){
                 if (send400(sockfd_conn, 0)<0) exit(1);
                 exit(0);
             }
+            
+            fprintf(stdout, "GET request found\n"); fflush(stdout); // debug
             
             // Parse URL in request line
             int idx = strlen(get);
@@ -193,17 +195,21 @@ int main (int argc, char* argv[]){
             char *path_req = NULL;
             parse_url(url_req, &host_req, &path_req, &port_req);
             
+            fprintf(stdout, "URL in request line parsed: [%s]:[%d][%s]\n", host_req, port_req, path_req); fflush(stdout); // debug
+            
             // Parse HTTP version
             // accept only 1.0 (although according to protocol should accept <=1.0)
             char *http_ver = "HTTP/1.0";
             for(; !isspace(msg[idx]); idx++) {} // skip to next whitespace
             for(; isspace(msg[idx]); idx++) {} // skip whitespace
-            int idx_aux = idx;
+            idx_aux = idx;
             for(; !isspace(msg[idx]); idx++) {} // skip to next whitespace
             if (memcmp(msg + idx_aux, http_ver, strlen(http_ver)) != 0){
                 if (send400(sockfd_conn, 0)<0) exit(1);
                 exit(0);
             }
+            
+            fprintf(stdout, "HTTP version matched\n"); fflush(stdout); // debug
             
             // Parse for "Host" Header
             // "Host" header should exist uniquely (i.e. no duplicates)
@@ -215,7 +221,7 @@ int main (int argc, char* argv[]){
             }
             idx = ptr - msg + strlen(host_header);
             for(; isspace(msg[idx]); idx++) {} // skip whitespace
-            int idx_aux = idx;
+            idx_aux = idx;
             for(; !isspace(msg[idx]); idx++) {} // skip to next whitespace
             char *url_hd = malloc(idx - idx_aux + 1);
             bzero(url_hd, idx - idx_aux + 1);
@@ -226,17 +232,77 @@ int main (int argc, char* argv[]){
                 exit(0);
             }
             
+            fprintf(stdout, "Host header uniquely found\n"); fflush(stdout); // debug
+            
             // Parse URL found in Host header
             // format should be <Host>:<Port> where <Host> matches host in request line
             int port_hd;
             char *host_hd = NULL;
             char *path_hd = NULL;
-            if ((parse_url(url_hd, &host_hd, &path_hd, &port_hd) | 5) || (strcmp(host_req, host_hd) != 0) ){
+            if ((parse_url(url_hd, &host_hd, &path_hd, &port_hd) & 5) || (strlen(host_req) && (strcmp(host_req, host_hd) != 0)) ){
+                fprintf(stdout, "URL in header is in wrong format: %s", url_hd); fflush(stdout); // debug
+                if (send503(sockfd_conn, 0)<0) exit(1);
+                exit(0);
+            }
+            if (!strlen(host_req)) {
+                free(host_req);
+                host_req = host_hd;
+            }
+            
+            fprintf(stdout, "Message parsed; no flaws were found.\n"); fflush(stdout); // debug
+            
+            // Make Connection with Host
+            
+            int sockfd_host;
+            struct addrinfo *addr_host, hints, *res;
+            
+            bzero(&hints, sizeof(hints));
+            hints.ai_family = PF_INET;
+            hints.ai_socktype = SOCK_STREAM;
+            // hints.ai_flags |= AI_CANONNAME;
+            
+            int gotaddr = getaddrinfo(host_req, NULL, &hints, &res);
+            if (gotaddr  != 0) {
+                fprintf(stderr, "getaddrinfo failure: %d\n",gotaddr);
+                exit(1);
+            }
+                        
+            // Socket Creation
+            sockfd_host = socket(AF_INET, SOCK_STREAM, 0);
+            if (sockfd_host < 0){
+                fprintf(stderr, "socket creation failure: %s\n", strerror(errno));
+                exit(1);
+            }
+            
+            // Socket Connection
+            int connected = 0;
+            while (res && !connected){
+                addr_host = res;
+                ((struct sockaddr_in *)(addr_host->ai_addr))->sin_port = htons(port_req);
+                
+                if (connect(sockfd_host, (struct sockaddr *)addr_host->ai_addr, sizeof(struct sockaddr_in)) < 0){
+                    res = res->ai_next;
+                }else{
+                    connected = 1;
+                }
+            }
+            
+            if (!connected){
+                fprintf(stderr, "failed to establish connection to host\n");
                 if (send503(sockfd_conn, 0)<0) exit(1);
                 exit(0);
             }
             
-            // Make Connection with Host
+            // Format and send GET Message
+            // Trim all headers but "Host"
+            free(msg);
+            asprintf(&msg, "GET %s HTTP/1.0\r\n"
+                "Host: %s:%d\r\n"
+                "\r\n",
+                path_req, host_req, port_req);
+            send_all(sockfd_host, msg, strlen(msg), 0);
+            fprintf(stdout, "<MESSAGE SENT>\n%s</MESSAGE SENT>\n", msg); fflush(stdout); // debug
+            
         }
         // Close connection
         close (sockfd_conn);

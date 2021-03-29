@@ -143,7 +143,7 @@ int main (int argc, char* argv[]){
     
     if (mode == 1){ // GET
         // Message Formatting
-        asprintf(&msg, "GET %s HTTP/1.0\r\nHost: %s:%d\r\n\r\n", path, host, port);
+        asprintf(&msg, "GET / HTTP/1.0\r\nHost: www.naver.com\r\n\r\n");
         int msg_len = strlen(msg);
         
         // Send Message
