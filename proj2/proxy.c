@@ -104,7 +104,7 @@ int main (int argc, char* argv[]){
     // Parse arguments
     if ( (argc != 2) || !atoi(argv[1]) ){
         fprintf (stdout, "Usage: %s <PORT>\n", argv[0]);
-        return 1;
+        exit(1);
     }
     int port_proxy = atoi(argv[1]);
     
@@ -117,7 +117,7 @@ int main (int argc, char* argv[]){
     sockfd_listen = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd_listen < 0){
         fprintf(stderr, "socket creation failure: %s\n", strerror(errno));
-        return 1;
+        exit(1);
     }
     
     bzero(&addr_proxy, sizeof(addr_proxy));
@@ -127,7 +127,119 @@ int main (int argc, char* argv[]){
     
     if (bind(sockfd_listen, (struct sockaddr*)&addr_proxy, sizeof(addr_proxy)) < 0){
         fprintf(stderr, "socket binding failure: %s\n", strerror(errno));
-        return 1;
+        exit(1);
+    }
+    
+    int state_listen = 0;
+    state_listen = listen(sockfd_listen, QUEUE_SIZE);
+    
+    signal(SIGCHLD, SIG_IGN);
+    while(1){
+        char *msg = malloc(BUFFER_SIZE_MEDIUM);
+        char *buffer_recv = malloc(BUFFER_SIZE_MEDIUM);
+        sockfd_conn = accept(sockfd_listen, (struct sockaddr*)&addr_cli, &len_cli);
+        // fprintf(stdout, "connection accepted, forking process..\n"); fflush(stdout); // debug line
+        int pid = fork();
+        if (pid == -1){
+            fprintf(stderr, "fork failure: %s\n", strerror(errno));
+        }
+        if (pid == 0){
+            // Receive Message from Client
+            bzero((void *)msg, BUFFER_SIZE_MEDIUM);
+            
+            int len_recv = 0;
+            int len_recv_tot = 0;
+            char *eoh = "\r\n\r\n";
+            char *ptr_eoh;
+            do {
+                // Receive and copy incoming message to msg
+                // stop looping when end of header is reached
+                len_recv = recv(sockfd_conn, buffer_recv, BUFFER_SIZE_MEDIUM, 0);
+                if (len_recv < 0){
+                    fprintf(stderr, "reception failure: %s\n", strerror(errno));
+                    exit(1);
+                }
+                memcpy(msg + len_recv_tot, buffer_recv, len_recv);
+                len_recv_tot += len_recv;
+                // fprintf(stdout, "received %d B (total %d B)\n", len_recv, len_recv_tot); fflush(stdout);
+                
+                ptr_eoh = strstr(msg, eoh);
+            }while (ptr_eoh == NULL);
+            // Delete everything after header
+            bzero(ptr_eoh + strlen(eoh), BUFFER_SIZE_MEDIUM - (ptr_eoh - msg + strlen(eoh)));
+            // printf("<MESSAGE>\n%s</MESSAGE>\n", msg); fflush(stdout); // debug
+            
+            // Parse Message
+            // Parser for "GET"
+            char *ptr;
+            char *get = "GET";
+            if ((memcpy(msg, get, strlen(get)) != 0) || !isspace(msg[strlen(get)]) ){
+                if (send400(sockfd_conn, 0)<0) exit(1);
+                exit(0);
+            }
+            
+            // Parse URL in request line
+            int idx = strlen(get);
+            for(; !isspace(msg[idx]); idx++) {} // skip to next whitespace
+            for(; isspace(msg[idx]); idx++) {} // skip whitespace
+            int idx_aux = idx;
+            for(; !isspace(msg[idx]); idx++) {} // skip to next whitespace
+            char *url_req = malloc(idx - idx_aux + 1);
+            bzero(url_req, idx - idx_aux + 1);
+            memcpy(url_req, msg + idx_aux, idx - idx_aux);
+            
+            int port_req;
+            char *host_req = NULL;
+            char *path_req = NULL;
+            parse_url(url_req, &host_req, &path_req, &port_req);
+            
+            // Parse HTTP version
+            // accept only 1.0 (although according to protocol should accept <=1.0)
+            char *http_ver = "HTTP/1.0";
+            for(; !isspace(msg[idx]); idx++) {} // skip to next whitespace
+            for(; isspace(msg[idx]); idx++) {} // skip whitespace
+            int idx_aux = idx;
+            for(; !isspace(msg[idx]); idx++) {} // skip to next whitespace
+            if (memcmp(msg + idx_aux, http_ver, strlen(http_ver)) != 0){
+                if (send400(sockfd_conn, 0)<0) exit(1);
+                exit(0);
+            }
+            
+            // Parse for "Host" Header
+            // "Host" header should exist uniquely (i.e. no duplicates)
+            char *host_header = "\r\nHost:";
+            ptr = strstr(msg, host_header);
+            if (ptr == NULL){
+                if (send400(sockfd_conn, 0)<0) exit(1);
+                exit(0);
+            }
+            idx = ptr - msg + strlen(host_header);
+            for(; isspace(msg[idx]); idx++) {} // skip whitespace
+            int idx_aux = idx;
+            for(; !isspace(msg[idx]); idx++) {} // skip to next whitespace
+            char *url_hd = malloc(idx - idx_aux + 1);
+            bzero(url_hd, idx - idx_aux + 1);
+            memcpy(url_hd, msg + idx_aux, idx - idx_aux);
+            ptr = strstr(msg + idx, host_header);
+            if (ptr != NULL){
+                if (send400(sockfd_conn, 0)<0) exit(1);
+                exit(0);
+            }
+            
+            // Parse URL found in Host header
+            // format should be <Host>:<Port> where <Host> matches host in request line
+            int port_hd;
+            char *host_hd = NULL;
+            char *path_hd = NULL;
+            if ((parse_url(url_hd, &host_hd, &path_hd, &port_hd) | 5) || (strcmp(host_req, host_hd) != 0) ){
+                if (send503(sockfd_conn, 0)<0) exit(1);
+                exit(0);
+            }
+            
+            // Make Connection with Host
+        }
+        // Close connection
+        close (sockfd_conn);
     }
     
     return 0; 
