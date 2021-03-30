@@ -143,7 +143,8 @@ int main (int argc, char* argv[]){
     
     if (mode == 1){ // GET
         // Message Formatting
-        asprintf(&msg, "GET http://www.naver.com/ HTTP/1.0\r\nHost: www.naver.com\r\n\r\n");
+        // asprintf(&msg, "GET http://www.naver.com/ HTTP/1.0\r\nHost: www.naver.com\r\n\r\n");
+        asprintf(&msg, "GET http://www.daum.net/ HTTP/1.0\r\nHost: www.daum.net\r\n\r\n");
         int msg_len = strlen(msg);
         
         // Send Message
@@ -172,17 +173,17 @@ int main (int argc, char* argv[]){
                 fprintf(stderr, "reception failure: %s\n", strerror(errno));
                 exit(EXIT_FAILURE);
             }
+            fwrite(buffer_recv + 3, len_recv, 1, stdout);
+            // for (i = 0; (i <= len_recv-4) && !eoh_reached ; i++){
+            //     if (memcmp(buffer_recv + i, eoh, 4) == 0) {
+            //         eoh_reached = 1;
+            //     }
+            // }
             
-            for (i = 0; (i <= len_recv-4) && !eoh_reached ; i++){
-                if (memcmp(buffer_recv + i, eoh, 4) == 0) {
-                    eoh_reached = 1;
-                }
-            }
-            
-            if (eoh_reached)
-                fwrite(buffer_recv + 3 + i, len_recv - i, 1, stdout);
-            else
-                memcpy(buffer_recv, buffer_recv + len_recv, 3);
+            // if (eoh_reached)
+            //     fwrite(buffer_recv + 3 + i, len_recv - i, 1, stdout);
+            // else
+            //     memcpy(buffer_recv, buffer_recv + len_recv, 3);
         }while (len_recv > 0);
         
         free(msg);

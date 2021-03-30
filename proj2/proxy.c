@@ -21,6 +21,7 @@
 #define BUFFER_SIZE_SMALL (1000) //1k
 
 #define QUEUE_SIZE 10
+#define BLACKLIST_REDIRECTION ("www.warning.or.kr")
 
 int parse_url(char *url, char **host, char **path, int *port){
     // Parses string URL and saves the result to HOST, PATH, and PORT
@@ -168,7 +169,7 @@ int main (int argc, char* argv[]){
             }while ((ptr_eoh == NULL) && len_recv_tot < BUFFER_SIZE_MEDIUM);
             // Delete everything after header
             bzero(ptr_eoh + strlen(eoh), BUFFER_SIZE_MEDIUM - (ptr_eoh - msg + strlen(eoh)));
-            fprintf(stdout, "<MESSAGE RECEIVED>\n%s</MESSAGE RECEIVED>\n", msg); fflush(stdout); // debug
+            // fprintf(stdout, "<MESSAGE RECEIVED>\n%s</MESSAGE RECEIVED>\n", msg); fflush(stdout); // debug
             
             // Parse Message
             // Parser for "GET"
@@ -179,7 +180,7 @@ int main (int argc, char* argv[]){
                 exit(0);
             }
             
-            fprintf(stdout, "GET request found\n"); fflush(stdout); // debug
+            // fprintf(stdout, "GET request found\n"); fflush(stdout); // debug
             
             // Parse URL in request line
             int idx = strlen(get);
@@ -196,7 +197,7 @@ int main (int argc, char* argv[]){
             char *path_req = NULL;
             parse_url(url_req, &host_req, &path_req, &port_req);
             
-            fprintf(stdout, "URL in request line parsed: [%s]:[%d][%s]\n", host_req, port_req, path_req); fflush(stdout); // debug
+            // fprintf(stdout, "URL in request line parsed: [%s]:[%d][%s]\n", host_req, port_req, path_req); fflush(stdout); // debug
             
             // Parse HTTP version
             // accept only 1.0 (although according to protocol should accept <=1.0)
@@ -210,7 +211,7 @@ int main (int argc, char* argv[]){
                 exit(0);
             }
             
-            fprintf(stdout, "HTTP version matched\n"); fflush(stdout); // debug
+            // fprintf(stdout, "HTTP version matched\n"); fflush(stdout); // debug
             
             // Parse for "Host" Header
             // "Host" header should exist uniquely (i.e. no duplicates)
@@ -233,7 +234,7 @@ int main (int argc, char* argv[]){
                 exit(0);
             }
             
-            fprintf(stdout, "Host header uniquely found\n"); fflush(stdout); // debug
+            // fprintf(stdout, "Host header uniquely found\n"); fflush(stdout); // debug
             
             // Parse URL found in Host header
             // format should be <Host>:<Port> where <Host> matches host in request line
@@ -241,7 +242,7 @@ int main (int argc, char* argv[]){
             char *host_hd = NULL;
             char *path_hd = NULL;
             if ((parse_url(url_hd, &host_hd, &path_hd, &port_hd) & 5) || (strlen(host_req) && (strcmp(host_req, host_hd) != 0)) ){
-                fprintf(stdout, "URL in header is in wrong format: %s", url_hd); fflush(stdout); // debug
+                // fprintf(stdout, "URL in header is in wrong format: %s", url_hd); fflush(stdout); // debug
                 if (send503(sockfd_conn, 0)<0) exit(1);
                 exit(0);
             }
@@ -250,10 +251,32 @@ int main (int argc, char* argv[]){
                 host_req = host_hd;
             }
             
-            fprintf(stdout, "Message parsed; no flaws were found.\n"); fflush(stdout); // debug
+            // fprintf(stdout, "Message parsed; no flaws were found.\n"); fflush(stdout); // debug
             
             // Search through stdin redirection for host_req
-            // TODO
+            char *buffer_in = malloc(BUFFER_SIZE_SMALL);
+            int port_in; char *host_in; char *path_in;
+            bzero(buffer_in, BUFFER_SIZE_SMALL);
+            int is_blacklisted = 0;
+            while((fgets(buffer_in, BUFFER_SIZE_SMALL , stdin) != NULL) && !is_blacklisted){
+                // trim whitespace at the end of buffer_in
+                while( (strlen(buffer_in) > 0) && isspace(buffer_in[strlen(buffer_in)-1]) ){
+                    buffer_in [strlen(buffer_in) - 1] = '\0';
+                } 
+                // fprintf(stdout, "blacklist entry: %s\n", buffer_in);
+                parse_url(buffer_in, &host_in, &path_in, &port_in);
+                // fprintf(stdout, "blacklisted host: %s\n", host_in);
+                // fprintf(stdout, "strcmp(\"%s\", \"%s\") = %d\n", host_req, host_in, strcmp(host_req, host_in)); fflush(stdout);
+                if (strcmp(host_req, host_in) == 0){
+                    // blacklisted host; redirect to BLACKLIST_REDIRECTION
+                    // fprintf(stdout, "requested host is blocked\n"); fflush(stdout);
+                    host_req = BLACKLIST_REDIRECTION;
+                    port_req = port_in;
+                    path_req = path_in;
+                    is_blacklisted = 1; // used to break out safely from loop
+                }
+                bzero(buffer_in, BUFFER_SIZE_SMALL);
+            }
             
             // Make Connection with Host
             
@@ -296,7 +319,7 @@ int main (int argc, char* argv[]){
                 if (send503(sockfd_conn, 0)<0) exit(1);
                 exit(0);
             }
-            fprintf(stdout, "Established connection to host\n"); fflush(stdout);
+            // fprintf(stdout, "Established connection to host\n"); fflush(stdout);
             
             // Format and send GET Message
             // Trim all headers but "Host"
@@ -306,7 +329,7 @@ int main (int argc, char* argv[]){
                 "\r\n",
                 path_req, host_req, port_req);
             if (send_all(sockfd_host, msg, strlen(msg), 0) < 0) exit(1);
-            fprintf(stdout, "<MESSAGE SENT>\n%s</MESSAGE SENT>\n", msg); fflush(stdout); // debug
+            // fprintf(stdout, "<MESSAGE SENT>\n%s</MESSAGE SENT>\n", msg); fflush(stdout); // debug
             
             len_recv = 0;
             len_recv_tot = 0;
@@ -347,7 +370,10 @@ int main (int argc, char* argv[]){
                 
             }while ((ptr_eoh == NULL) | (len_recv_tot < header_length + content_length));
             
-            fprintf(stdout, "Message reception/relay finished\n"); fflush(stdout); // debug
+            // fprintf(stdout, "Message reception/relay finished\n"); fflush(stdout); // debug
+            
+            free(msg);
+            free(buffer_recv);
         }
         // Close connection
         close (sockfd_conn);
