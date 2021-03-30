@@ -27,7 +27,7 @@ int parse_url(char *url, char **host, char **path, int *port){
     // Parses string URL and saves the result to HOST, PATH, and PORT
     // e.g. URL = "www.example.com:80/index.html"
     // *host = "www.example.com", *path = "/index.html", *port = 80
-    // return ptcl_found*4 + port_found*2 + path_found
+    // return ptcl_found * 4 + port_found * 2 + path_found
     
     int port_no = 80; // default port number to be returned
     int len_url = strlen(url);
@@ -331,6 +331,7 @@ int main (int argc, char* argv[]){
             if (send_all(sockfd_host, msg, strlen(msg), 0) < 0) exit(1);
             // fprintf(stdout, "<MESSAGE SENT>\n%s</MESSAGE SENT>\n", msg); fflush(stdout); // debug
             
+            // Response Reception and Relaying
             len_recv = 0;
             len_recv_tot = 0;
             ptr_eoh = NULL;
@@ -370,10 +371,10 @@ int main (int argc, char* argv[]){
                     if (send_all(sockfd_conn, buffer_recv, len_recv, 0) < 0) exit(1);
                 }
                 
-            }while ((ptr_eoh == NULL) | (len_recv_tot < header_length + content_length));
+            }while ((ptr_eoh == NULL) | ((ptr_eoh != NULL) && (len_recv_tot < header_length + content_length)));
             
             // fprintf(stdout, "Message reception/relay finished\n"); fflush(stdout); // debug
-            
+            close(sockfd_host);
             free(msg);
             free(buffer_recv);
         }
