@@ -308,8 +308,6 @@ int main (int argc, char* argv[]){
             if (send_all(sockfd_host, msg, strlen(msg), 0) < 0) exit(1);
             fprintf(stdout, "<MESSAGE SENT>\n%s</MESSAGE SENT>\n", msg); fflush(stdout); // debug
             
-            // Receive Response from Host
-            // Parse Header and find "Content-Length" header while looping
             len_recv = 0;
             len_recv_tot = 0;
             ptr_eoh = NULL;
@@ -317,10 +315,9 @@ int main (int argc, char* argv[]){
             char *ptr_length;
             int content_length = 0;
             int header_length = 0;
-            bzero(msg, BUFFER_SIZE_MEDIUM);
+            msg = malloc(BUFFER_SIZE_MEDIUM);
             do {
                 len_recv = recv(sockfd_host, buffer_recv, BUFFER_SIZE_MEDIUM, 0);
-                fprintf(stdout, "received %d B\n", len_recv); fflush(stdout);
                 if (len_recv < 0){
                     fprintf(stderr, "reception failure: %s\n", strerror(errno));
                     exit(1);
@@ -344,11 +341,12 @@ int main (int argc, char* argv[]){
                     }   
                 }else{
                     len_recv_tot += len_recv;
+                    // fprintf(stdout, "received %d B (total %d B)\n", len_recv, len_recv_tot); fflush(stdout);
                     if (send_all(sockfd_conn, buffer_recv, len_recv, 0) < 0) exit(1);
                 }
                 
             }while ((ptr_eoh == NULL) | (len_recv_tot < header_length + content_length));
-            // Delete everything after header
+            
             fprintf(stdout, "Message reception/relay finished\n"); fflush(stdout); // debug
         }
         // Close connection
