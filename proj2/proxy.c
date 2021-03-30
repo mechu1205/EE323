@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <sys/socket.h> 
 #include <sys/types.h> 
+#include <sys/param.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <unistd.h>
@@ -159,12 +160,12 @@ int main (int argc, char* argv[]){
                     fprintf(stderr, "reception failure: %s\n", strerror(errno));
                     exit(1);
                 }
-                memcpy(msg + len_recv_tot, buffer_recv, len_recv);
-                len_recv_tot += len_recv;
+                memcpy(msg + len_recv_tot, buffer_recv, MIN(len_recv, BUFFER_SIZE_MEDIUM - len_recv_tot));
+                len_recv_tot += MIN(len_recv, BUFFER_SIZE_MEDIUM - len_recv_tot);
                 // fprintf(stdout, "received %d B (total %d B)\n", len_recv, len_recv_tot); fflush(stdout);
                 
                 ptr_eoh = strstr(msg, eoh);
-            }while (ptr_eoh == NULL);
+            }while ((ptr_eoh == NULL) && len_recv_tot < BUFFER_SIZE_MEDIUM);
             // Delete everything after header
             bzero(ptr_eoh + strlen(eoh), BUFFER_SIZE_MEDIUM - (ptr_eoh - msg + strlen(eoh)));
             fprintf(stdout, "<MESSAGE RECEIVED>\n%s</MESSAGE RECEIVED>\n", msg); fflush(stdout); // debug
@@ -251,6 +252,9 @@ int main (int argc, char* argv[]){
             
             fprintf(stdout, "Message parsed; no flaws were found.\n"); fflush(stdout); // debug
             
+            // Search through stdin redirection for host_req
+            // TODO
+            
             // Make Connection with Host
             
             int sockfd_host;
@@ -292,6 +296,7 @@ int main (int argc, char* argv[]){
                 if (send503(sockfd_conn, 0)<0) exit(1);
                 exit(0);
             }
+            fprintf(stdout, "Established connection to host\n"); fflush(stdout);
             
             // Format and send GET Message
             // Trim all headers but "Host"
@@ -300,9 +305,51 @@ int main (int argc, char* argv[]){
                 "Host: %s:%d\r\n"
                 "\r\n",
                 path_req, host_req, port_req);
-            send_all(sockfd_host, msg, strlen(msg), 0);
+            if (send_all(sockfd_host, msg, strlen(msg), 0) < 0) exit(1);
             fprintf(stdout, "<MESSAGE SENT>\n%s</MESSAGE SENT>\n", msg); fflush(stdout); // debug
             
+            // Receive Response from Host
+            // Parse Header and find "Content-Length" header while looping
+            len_recv = 0;
+            len_recv_tot = 0;
+            ptr_eoh = NULL;
+            char *length_header = "\r\nContent-Length:";
+            char *ptr_length;
+            int content_length = 0;
+            int header_length = 0;
+            bzero(msg, BUFFER_SIZE_MEDIUM);
+            do {
+                len_recv = recv(sockfd_host, buffer_recv, BUFFER_SIZE_MEDIUM, 0);
+                fprintf(stdout, "received %d B\n", len_recv); fflush(stdout);
+                if (len_recv < 0){
+                    fprintf(stderr, "reception failure: %s\n", strerror(errno));
+                    exit(1);
+                }
+                if (ptr_eoh == NULL){
+                    memcpy(msg + len_recv_tot, buffer_recv, MIN(len_recv, BUFFER_SIZE_MEDIUM - len_recv_tot));
+                    len_recv_tot += MIN(len_recv, BUFFER_SIZE_MEDIUM - len_recv_tot);
+                    // fprintf(stdout, "received %d B (total %d B)\n", len_recv, len_recv_tot); fflush(stdout);
+                    ptr_eoh = strstr(msg, eoh);
+                    
+                    if (ptr_eoh != NULL){
+                        if (send_all(sockfd_conn, msg, len_recv_tot, 0) < 0) exit(1);
+                        header_length = ptr_eoh - msg + strlen(eoh);
+                        
+                        ptr_length = strstr(msg, length_header);
+                        if (ptr_length != NULL){
+                            ptr_length += strlen(length_header);
+                            for(; isspace(*ptr_length); ptr_length++) {} // skip whitespace
+                            content_length = atoi(ptr_length);
+                        }
+                    }   
+                }else{
+                    len_recv_tot += len_recv;
+                    if (send_all(sockfd_conn, buffer_recv, len_recv, 0) < 0) exit(1);
+                }
+                
+            }while ((ptr_eoh == NULL) | (len_recv_tot < header_length + content_length));
+            // Delete everything after header
+            fprintf(stdout, "Message reception/relay finished\n"); fflush(stdout); // debug
         }
         // Close connection
         close (sockfd_conn);
