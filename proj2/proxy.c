@@ -169,7 +169,7 @@ int main (int argc, char* argv[]){
             }while ((ptr_eoh == NULL) && len_recv_tot < BUFFER_SIZE_MEDIUM);
             // Delete everything after header
             bzero(ptr_eoh + strlen(eoh), BUFFER_SIZE_MEDIUM - (ptr_eoh - msg + strlen(eoh)));
-            // fprintf(stdout, "<MESSAGE RECEIVED>\n%s</MESSAGE RECEIVED>\n", msg); fflush(stdout); // debug
+            // fprintf(stdout, "<MESSAGE FROM CLIENT>\n%s</MESSAGE FROM CLIENT>\n", msg); fflush(stdout); // debug
             
             // Parse Message
             // Parser for "GET"
@@ -339,12 +339,14 @@ int main (int argc, char* argv[]){
             int content_length = 0;
             int header_length = 0;
             msg = malloc(BUFFER_SIZE_MEDIUM);
+            // fprintf(stdout, "Receiving response from host..\n"); fflush(stdout);
             do {
                 len_recv = recv(sockfd_host, buffer_recv, BUFFER_SIZE_MEDIUM, 0);
                 if (len_recv < 0){
                     fprintf(stderr, "reception failure: %s\n", strerror(errno));
                     exit(1);
                 }
+                // fwrite(buffer_recv, len_recv, 1, stdout); // debug
                 if (ptr_eoh == NULL){
                     memcpy(msg + len_recv_tot, buffer_recv, MIN(len_recv, BUFFER_SIZE_MEDIUM - len_recv_tot));
                     len_recv_tot += MIN(len_recv, BUFFER_SIZE_MEDIUM - len_recv_tot);
