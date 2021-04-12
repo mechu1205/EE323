@@ -28,7 +28,7 @@
 enum {
     CSTATE_CLSD = 0,
     CSTATE_LIST,
-    CSTATE_RECV,
+    CSTATE_RCVD,
     CSTATE_SENT,
     CSTATE_ESTB,
     CSTATE_WAIT1,
@@ -69,6 +69,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
 
     generate_initial_seq_num(ctx);
     tcp_seq seq = ctx->initial_sequence_num;
+    int san = 0;
     
     mysock_context_t *context = _mysock_get_context(sd);
 
@@ -87,7 +88,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
         struct tcphdr msghdr;
         bzero(&msghdr, sizeof(struct tcphdr));
         msghdr.th_flags = TH_SYN;
-        msghdr.th_seq = htonl(ctx->initial_sequence_num);
+        msghdr.th_seq = htonl(seq);
         msghdr.th_win = htons(STCP_MSS);
         // struct sockaddr_in addr_loc;
         // struct sockaddr_in addr_rmt;
@@ -95,7 +96,13 @@ void transport_init(mysocket_t sd, bool_t is_active)
         // mygetpeername(sd, &addr_rmt, sizeof(struct sockaddr_in));
         
         // _mysock_set_checksum(context, &msghdr, sizeof(struct tcphdr));
-        stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
+        if( stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL) < 0 ){
+            //close
+            free(ctx);
+            stcp_unblock_application(sd);
+            return;
+        };
+        ctx->connection_state = CSTATE_SENT;
         // checksum set by stcp_network_send
         
         // block here
@@ -117,11 +124,14 @@ void transport_init(mysocket_t sd, bool_t is_active)
             //close
         }
         if (flags_recv == TH_SYN | TH_ACK){
+            ctx->connection_state = CSTATE_RCVD;
             bzero(&msghdr, sizeof(struct tcphdr));
-            msghdr.th_flags = TH_SYN;
-            msghdr.th_seq = htonl(ctx->initial_sequence_num);
+            msghdr.th_flags = TH_ACK;
+            msghdr.th_seq = htonl(seq + 1);
             msghdr.th_win = htons(STCP_MSS);
-            
+            msghdr.th_ack = htonl(seq_recv + 1);
+            stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
+            ctx->connection_state = CSTATE_ESTB;
         }
         
         
