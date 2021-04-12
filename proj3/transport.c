@@ -68,11 +68,14 @@ void transport_init(mysocket_t sd, bool_t is_active)
     assert(ctx);
 
     generate_initial_seq_num(ctx);
-    tcp_seq seq = ctx->initial_sequence_num;
-    int san = 0;
+    tcp_seq seq_send = ctx->initial_sequence_num;
+    int san = 0; //sanity checks
     
     mysock_context_t *context = _mysock_get_context(sd);
-
+    struct tcphdr msghdr;
+    bzero(&msghdr, sizeof(struct tcphdr));
+    void *buffer = calloc(1, BUFFER_SIZE);
+    
     /* TODO: you should send a SYN packet here if is_active, or wait for one
      * to arrive if !is_active.  after the handshake completes, unblock the
      * application with stcp_unblock_application(sd).  you may also use
@@ -84,65 +87,92 @@ void transport_init(mysocket_t sd, bool_t is_active)
         // Active Open; send SYN and wait
         // if recv SYN|ACK, send ACK
         // if recv SYN, send SYN_ACK and wait for ACK
-        // if timeout, close
-        struct tcphdr msghdr;
-        bzero(&msghdr, sizeof(struct tcphdr));
         msghdr.th_flags = TH_SYN;
-        msghdr.th_seq = htonl(seq);
+        msghdr.th_seq = htonl(seq_send++);
         msghdr.th_win = htons(STCP_MSS);
-        // struct sockaddr_in addr_loc;
-        // struct sockaddr_in addr_rmt;
-        // mygetsockname(sd, &addr_loc, sizeof(struct sockaddr_in));
-        // mygetpeername(sd, &addr_rmt, sizeof(struct sockaddr_in));
-        
-        // _mysock_set_checksum(context, &msghdr, sizeof(struct tcphdr));
         if( stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL) < 0 ){
             //close
             free(ctx);
+            free(buffer);
             stcp_unblock_application(sd);
             return;
         };
         ctx->connection_state = CSTATE_SENT;
         // checksum set by stcp_network_send
-        
-        // block here
-        void *buffer = calloc(1, BUFFER_SIZE);
+    }else{
+        // Passive open
+        ctx->connection_state = CSTATE_RCVD;
+    }
+    
+    // int wait_for_arrival = 1;
+    int do_close = 0;
+    
+    while(ctx->connection_state != CSTATE_ESTB){
+        // Wait for incoming message
         ssize_t len_recv = stcp_network_recv(sd, buffer, BUFFER_SIZE);
         // checksum verification is done by stcp_network_recv
         uint8_t flags_recv = ((struct tcphdr *)buffer)->th_flags;
         tcp_seq ack_recv = ntohl(((struct tcphdr *)buffer)->th_ack);
         tcp_seq seq_recv = ntohl(((struct tcphdr *)buffer)->th_seq);
-        
-        int do_close = 0;
-        if (ack_recv != seq+1){
+        if (ack_recv != seq_send){
             do_close = 1;
         }
-        if (flags_recv != TH_SYN && flags_recv != TH_SYN | TH_ACK){
-            do_close = 1;
+        if (!do_close){
+            switch (ctx->connection_state){
+                case CSTATE_LIST:{
+                    // wait for SYN then send SYN|ACK, goto CSTATE_RCVD
+                    if (flags_recv == TH_SYN){
+                        bzero(&msghdr, sizeof(struct tcphdr));
+                        msghdr.th_flags = TH_SYN|TH_ACK;
+                        msghdr.th_seq = htonl(seq_send++);
+                        msghdr.th_win = htons(STCP_MSS);
+                        msghdr.th_ack = htonl(seq_recv + 1);
+                        stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
+                        ctx->connection_state = CSTATE_RCVD;
+                    }else{
+                        do_close = 1;
+                    }
+                    break;
+                }
+                case CSTATE_SENT:{
+                    // wait for SYN|ACK then send ACK, goto CSTATE_ESTB
+                    if (flags_recv == TH_SYN | TH_ACK){
+                        bzero(&msghdr, sizeof(struct tcphdr));
+                        msghdr.th_flags = TH_ACK;
+                        msghdr.th_seq = htonl(seq_send++);
+                        msghdr.th_win = htons(STCP_MSS);
+                        msghdr.th_ack = htonl(seq_recv + 1);
+                        stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
+                        ctx->connection_state = CSTATE_ESTB;
+                    }else{
+                        do_close = 1;
+                    }
+                    break;
+                }
+                case CSTATE_RCVD:{
+                    // wait for ACK then goto CSTAT_ESTB
+                    if (flags_recv == TH_ACK){
+                        ctx->connection_state = CSTATE_ESTB;
+                    }else{
+                        do_close = 1;
+                    }
+                    break;
+                }
+                default:{
+                    do_close = 1;
+                }
+            }
         }
         if (do_close){
             //close
+            free(ctx);
+            free(buffer);
+            stcp_unblock_application(sd);
+            return;
         }
-        if (flags_recv == TH_SYN | TH_ACK){
-            ctx->connection_state = CSTATE_RCVD;
-            bzero(&msghdr, sizeof(struct tcphdr));
-            msghdr.th_flags = TH_ACK;
-            msghdr.th_seq = htonl(seq + 1);
-            msghdr.th_win = htons(STCP_MSS);
-            msghdr.th_ack = htonl(seq_recv + 1);
-            stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
-            ctx->connection_state = CSTATE_ESTB;
-        }
-        
-        
-    }else{
-        // Passive Open; wait for SYN, send SYN|ACK, wait for ACK
     }
+    free(buffer);
     
-    
-    
-    
-    ctx->connection_state = CSTATE_ESTB;
     stcp_unblock_application(sd);
 
     control_loop(sd, ctx);
