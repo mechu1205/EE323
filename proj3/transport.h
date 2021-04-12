@@ -10,6 +10,7 @@
 
 #include <stdio.h>  /* for perror */
 #include <errno.h>
+#include <stdint.h>
 #include "mysock.h"
 
 
