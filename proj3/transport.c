@@ -64,6 +64,7 @@ static void control_loop(mysocket_t sd, context_t *ctx);
  */
 void transport_init(mysocket_t sd, bool_t is_active)
 {
+    // printf("transport_init(%d, %d)\n", sd, is_active);
     context_t *ctx;
 
     ctx = (context_t *) calloc(1, sizeof(context_t));
@@ -86,6 +87,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
      * ECONNREFUSED, etc.) before calling the function.
      */
     if(is_active){
+        // printf("Initiating Active Open..\n");
         // Active Open; send SYN and wait
         // if recv SYN|ACK, send ACK
         // if recv SYN, send SYN_ACK and wait for ACK
@@ -102,21 +104,26 @@ void transport_init(mysocket_t sd, bool_t is_active)
         ctx->connection_state = CSTATE_SENT;
         // checksum set by stcp_network_send
     }else{
+        // printf("Initiating Passive Open..\n");
         // Passive open
-        ctx->connection_state = CSTATE_RCVD;
+        ctx->connection_state = CSTATE_LIST;
     }
     
     // int wait_for_arrival = 1;
     int do_close = 0;
     
     while(ctx->connection_state != CSTATE_ESTB){
+        // printf("Waiting for incoming packet..\n");
         // Wait for incoming message
         ssize_t len_recv = stcp_network_recv(sd, buffer, BUFFER_SIZE);
         // checksum verification is done by stcp_network_recv
         uint8_t flags_recv = ((struct tcphdr *)buffer)->th_flags;
         tcp_seq ack_recv = ntohl(((struct tcphdr *)buffer)->th_ack);
         tcp_seq seq_recv = ntohl(((struct tcphdr *)buffer)->th_seq);
-        if (ack_recv != ctx->seq_send){
+        // printf("RECV: FLAGS[%d]ACK[%d]SEQ[%d]\n", flags_recv, ack_recv, seq_recv);
+        // printf("ack_recv = %d, seq_send = %d\n", ack_recv, ctx->seq_send);
+        if ((ack_recv != ctx->seq_send) && (flags_recv & TH_ACK)){
+            // printf("do_close\n");
             do_close = 1;
         }
         ctx->ack_send = seq_recv + 1;
@@ -130,7 +137,8 @@ void transport_init(mysocket_t sd, bool_t is_active)
                         msghdr.th_seq = htonl(ctx->seq_send++);
                         msghdr.th_win = htons(STCP_MSS);
                         msghdr.th_ack = htonl(ctx->ack_send);
-                        stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
+                        // printf("Sending..\n");
+                        stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
                         ctx->connection_state = CSTATE_RCVD;
                     }else{
                         do_close = 1;
@@ -145,7 +153,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
                         msghdr.th_seq = htonl(ctx->seq_send++);
                         msghdr.th_win = htons(STCP_MSS);
                         msghdr.th_ack = htonl(ctx->ack_send);
-                        stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
+                        stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
                         ctx->connection_state = CSTATE_ESTB;
                     }else{
                         do_close = 1;
@@ -167,6 +175,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
             }
         }
         if (do_close){
+            // printf("Closing without finishing connection..\n");
             //close
             free(ctx);
             free(buffer);
@@ -175,11 +184,11 @@ void transport_init(mysocket_t sd, bool_t is_active)
         }
     }
     free(buffer);
-    
+    // printf("unblocking application with sockfd %d\n", sd);
     stcp_unblock_application(sd);
-
+    // printf("unblocked application with sockfd %d, entering control loop\n", sd);
     control_loop(sd, ctx);
-
+    // printf("application with sockfd %d exited from control loop\n", sd);
     /* do any cleanup here */
     free(ctx);
 }
@@ -202,12 +211,15 @@ static void generate_initial_seq_num(context_t *ctx)
  */
 static void control_loop(mysocket_t sd, context_t *ctx)
 {
+    // printf("starting control loop.. (sockfd %d)\n", sd);
     assert(ctx);
     void *buffer = calloc(1, BUFFER_SIZE);
     struct tcphdr msghdr;
         
     while (!ctx->done)
     {
+        // printf("start of a loop, waiting for event..\n");
+        // printf("Connection state: %d\n", ctx->connection_state);
         // bzero(buffer, BUFFER_SIZE);
         bzero(&msghdr, sizeof(struct tcphdr));
         unsigned int event;
@@ -215,6 +227,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
         /* see stcp_api.h or stcp_api.c for details of this function */
         /* TODO: you will need to change some of these arguments! */
         event = stcp_wait_for_event(sd, ANY_EVENT, NULL);
+        // printf("event returned\n");
 
         /* check whether it was the network, app, or a close request */
         // Handle the cases where the events are APP_DATA, APP_CLOSE_REQUESTED, NETWORK_DATA
@@ -228,12 +241,14 @@ static void control_loop(mysocket_t sd, context_t *ctx)
             uint8_t flags_recv = ((struct tcphdr *)buffer)->th_flags;
             tcp_seq ack_recv = ntohl(((struct tcphdr *)buffer)->th_ack);
             tcp_seq seq_recv = ntohl(((struct tcphdr *)buffer)->th_seq);
-            
+            // printf("RECV: FLAGS[%d]ACK[%d]SEQ[%d]\n", flags_recv, ack_recv, seq_recv);
             // don't worry about packet loss or reordering
             
             if (flags_recv & TH_ACK){
                 ctx->ack_send = seq_recv + 1;
                 if (flags_recv & TH_FIN){
+                    // printf("FIN received, notifying the application..\n");
+                    stcp_fin_received(sd);
                     switch (ctx->connection_state){
                         case CSTATE_ESTB:{
                             // send ACK then goto CSTATE_CLSW
@@ -241,8 +256,8 @@ static void control_loop(mysocket_t sd, context_t *ctx)
                             msghdr.th_seq = htonl(ctx->seq_send++);
                             msghdr.th_win = htons(STCP_MSS);
                             msghdr.th_ack = htonl(ctx->ack_send);
-                            stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
-                            ctx->connection_state = CSTATE_ESTB;
+                            stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
+                            ctx->connection_state = CSTATE_CLSW;
                             break;
                         }
                         case CSTATE_WAIT1:{
@@ -255,7 +270,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
                                 msghdr.th_seq = htonl(ctx->seq_send++);
                                 msghdr.th_win = htons(STCP_MSS);
                                 msghdr.th_ack = htonl(seq_recv + 1);
-                                stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
+                                stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
                                 ctx->connection_state = CSTATE_ESTB;
                             }
                             break;
@@ -266,7 +281,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
                             msghdr.th_seq = htonl(ctx->seq_send++);
                             msghdr.th_win = htons(STCP_MSS);
                             msghdr.th_ack = htonl(seq_recv + 1);
-                            stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
+                            stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
                             ctx->connection_state = CSTATE_ESTB;
                             break;
                         }
@@ -300,7 +315,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
             msghdr.th_seq = htonl(ctx->seq_send++);
             msghdr.th_win = htons(STCP_MSS);
             msghdr.th_ack = htonl(ctx->ack_send);
-            stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
+            stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
             ctx->connection_state = CSTATE_WAIT1;
             break;
         }
@@ -308,6 +323,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
         ctx->done = (ctx->connection_state == CSTATE_CLSD)? TRUE: FALSE;
         /* etc. */
     }
+    // printf("Connection Closed\n");
     free(buffer);
 }
 
@@ -325,14 +341,14 @@ static void control_loop(mysocket_t sd, context_t *ctx)
  * Calls to this function are generated by the dprintf amd
  * dperror macros in transport.h
  */
-void our_dprintf(const char *format,...)
+void our_// printf(const char *format,...)
 {
     va_list argptr;
     char buffer[1024];
 
     assert(format);
     va_start(argptr, format);
-    vsnprintf(buffer, sizeof(buffer), format, argptr);
+    vsn// printf(buffer, sizeof(buffer), format, argptr);
     va_end(argptr);
     fputs(buffer, stdout);
     fflush(stdout);
