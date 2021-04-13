@@ -19,7 +19,7 @@
 #include "mysock.h"
 #include "stcp_api.h"
 #include "transport.h"
-#include "tcp_sum.h"
+// #include "tcp_sum.h"
 #include "mysock_impl.h"
 
 
@@ -31,6 +31,8 @@ enum {
     CSTATE_RCVD,
     CSTATE_SENT,
     CSTATE_ESTB,
+    CSTATE_CLSW,
+    CSTATE_LACK,
     CSTATE_WAIT1,
     CSTATE_WAIT2,
     CSTATE_CLSG,
@@ -48,6 +50,8 @@ typedef struct
     tcp_seq initial_sequence_num;
 
     /* any other connection-wide global variables go here */
+    tcp_seq seq_send;
+    tcp_seq ack_send;
 } context_t;
 
 
@@ -68,10 +72,8 @@ void transport_init(mysocket_t sd, bool_t is_active)
     assert(ctx);
 
     generate_initial_seq_num(ctx);
-    tcp_seq seq_send = ctx->initial_sequence_num;
-    int san = 0; //sanity checks
+    ctx->seq_send = ctx->initial_sequence_num;
     
-    mysock_context_t *context = _mysock_get_context(sd);
     struct tcphdr msghdr;
     bzero(&msghdr, sizeof(struct tcphdr));
     void *buffer = calloc(1, BUFFER_SIZE);
@@ -88,7 +90,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
         // if recv SYN|ACK, send ACK
         // if recv SYN, send SYN_ACK and wait for ACK
         msghdr.th_flags = TH_SYN;
-        msghdr.th_seq = htonl(seq_send++);
+        msghdr.th_seq = htonl(ctx->seq_send++);
         msghdr.th_win = htons(STCP_MSS);
         if( stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL) < 0 ){
             //close
@@ -114,9 +116,10 @@ void transport_init(mysocket_t sd, bool_t is_active)
         uint8_t flags_recv = ((struct tcphdr *)buffer)->th_flags;
         tcp_seq ack_recv = ntohl(((struct tcphdr *)buffer)->th_ack);
         tcp_seq seq_recv = ntohl(((struct tcphdr *)buffer)->th_seq);
-        if (ack_recv != seq_send){
+        if (ack_recv != ctx->seq_send){
             do_close = 1;
         }
+        ctx->ack_send = seq_recv + 1;
         if (!do_close){
             switch (ctx->connection_state){
                 case CSTATE_LIST:{
@@ -124,9 +127,9 @@ void transport_init(mysocket_t sd, bool_t is_active)
                     if (flags_recv == TH_SYN){
                         bzero(&msghdr, sizeof(struct tcphdr));
                         msghdr.th_flags = TH_SYN|TH_ACK;
-                        msghdr.th_seq = htonl(seq_send++);
+                        msghdr.th_seq = htonl(ctx->seq_send++);
                         msghdr.th_win = htons(STCP_MSS);
-                        msghdr.th_ack = htonl(seq_recv + 1);
+                        msghdr.th_ack = htonl(ctx->ack_send);
                         stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
                         ctx->connection_state = CSTATE_RCVD;
                     }else{
@@ -136,12 +139,12 @@ void transport_init(mysocket_t sd, bool_t is_active)
                 }
                 case CSTATE_SENT:{
                     // wait for SYN|ACK then send ACK, goto CSTATE_ESTB
-                    if (flags_recv == TH_SYN | TH_ACK){
+                    if (flags_recv == (TH_SYN | TH_ACK)){
                         bzero(&msghdr, sizeof(struct tcphdr));
                         msghdr.th_flags = TH_ACK;
-                        msghdr.th_seq = htonl(seq_send++);
+                        msghdr.th_seq = htonl(ctx->seq_send++);
                         msghdr.th_win = htons(STCP_MSS);
-                        msghdr.th_ack = htonl(seq_recv + 1);
+                        msghdr.th_ack = htonl(ctx->ack_send);
                         stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
                         ctx->connection_state = CSTATE_ESTB;
                     }else{
@@ -200,9 +203,13 @@ static void generate_initial_seq_num(context_t *ctx)
 static void control_loop(mysocket_t sd, context_t *ctx)
 {
     assert(ctx);
-
+    void *buffer = calloc(1, BUFFER_SIZE);
+    struct tcphdr msghdr;
+        
     while (!ctx->done)
     {
+        // bzero(buffer, BUFFER_SIZE);
+        bzero(&msghdr, sizeof(struct tcphdr));
         unsigned int event;
 
         /* see stcp_api.h or stcp_api.c for details of this function */
@@ -216,9 +223,92 @@ static void control_loop(mysocket_t sd, context_t *ctx)
             /* the application has requested that data be sent */
             /* see stcp_app_recv() */
         }
-
+        if (event & NETWORK_DATA){
+            stcp_network_recv(sd, buffer, BUFFER_SIZE);
+            uint8_t flags_recv = ((struct tcphdr *)buffer)->th_flags;
+            tcp_seq ack_recv = ntohl(((struct tcphdr *)buffer)->th_ack);
+            tcp_seq seq_recv = ntohl(((struct tcphdr *)buffer)->th_seq);
+            
+            // don't worry about packet loss or reordering
+            
+            if (flags_recv & TH_ACK){
+                ctx->ack_send = seq_recv + 1;
+                if (flags_recv & TH_FIN){
+                    switch (ctx->connection_state){
+                        case CSTATE_ESTB:{
+                            // send ACK then goto CSTATE_CLSW
+                            msghdr.th_flags = TH_ACK;
+                            msghdr.th_seq = htonl(ctx->seq_send++);
+                            msghdr.th_win = htons(STCP_MSS);
+                            msghdr.th_ack = htonl(ctx->ack_send);
+                            stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
+                            ctx->connection_state = CSTATE_ESTB;
+                            break;
+                        }
+                        case CSTATE_WAIT1:{
+                            // send ACK then goto CSTATE_CLSG(sim.close)
+                            // or CSTATE_CLSD(non-sim close)
+                            if (ack_recv == ctx->seq_send){
+                                ctx->connection_state = CSTATE_ESTB;
+                            }else{
+                                msghdr.th_flags = TH_ACK;
+                                msghdr.th_seq = htonl(ctx->seq_send++);
+                                msghdr.th_win = htons(STCP_MSS);
+                                msghdr.th_ack = htonl(seq_recv + 1);
+                                stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
+                                ctx->connection_state = CSTATE_ESTB;
+                            }
+                            break;
+                        }
+                        case CSTATE_WAIT2:{
+                            // send ACK then goto CSTATE_CLSD
+                            msghdr.th_flags = TH_ACK;
+                            msghdr.th_seq = htonl(ctx->seq_send++);
+                            msghdr.th_win = htons(STCP_MSS);
+                            msghdr.th_ack = htonl(seq_recv + 1);
+                            stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
+                            ctx->connection_state = CSTATE_ESTB;
+                            break;
+                        }
+                        default:{
+                            break;
+                        }
+                    }
+                }
+                else{
+                    switch (ctx->connection_state){
+                        case CSTATE_WAIT1:{
+                            // goto CSTATE_WAIT2
+                            ctx->connection_state = CSTATE_WAIT2;
+                            break;
+                        }
+                        case CSTATE_CLSG:{
+                            // goto CSTAE_CLSD
+                            ctx->connection_state = CSTATE_CLSD;
+                            break;
+                        }
+                        default:{
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        else if (event & APP_CLOSE_REQUESTED){
+            // send FIN|ACK then goto CSTATE_WAIT1
+            msghdr.th_flags = TH_FIN|TH_ACK;
+            msghdr.th_seq = htonl(ctx->seq_send++);
+            msghdr.th_win = htons(STCP_MSS);
+            msghdr.th_ack = htonl(ctx->ack_send);
+            stcp_network_send(sd, &msghdr, sizeof(struct tcphdr));
+            ctx->connection_state = CSTATE_WAIT1;
+            break;
+        }
+        
+        ctx->done = (ctx->connection_state == CSTATE_CLSD)? TRUE: FALSE;
         /* etc. */
     }
+    free(buffer);
 }
 
 
