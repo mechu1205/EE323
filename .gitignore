@@ -4,3 +4,4 @@ client
 *.txt
 proj2/*.c
 !proj2/proxy.c
+*.o
