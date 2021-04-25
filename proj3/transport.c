@@ -317,7 +317,6 @@ static void control_loop(mysocket_t sd, context_t *ctx)
             msghdr.th_ack = htonl(ctx->ack_send);
             stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
             ctx->connection_state = CSTATE_WAIT1;
-            break;
         }
         
         ctx->done = (ctx->connection_state == CSTATE_CLSD)? TRUE: FALSE;
