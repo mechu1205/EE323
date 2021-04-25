@@ -150,7 +150,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
                     if (flags_recv == (TH_SYN | TH_ACK)){
                         bzero(&msghdr, sizeof(struct tcphdr));
                         msghdr.th_flags = TH_ACK;
-                        msghdr.th_seq = htonl(ctx->seq_send++);
+                        msghdr.th_seq = htonl(ctx->seq_send);
                         msghdr.th_win = htons(STCP_MSS);
                         msghdr.th_ack = htonl(ctx->ack_send);
                         stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
@@ -235,6 +235,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
         {
             /* the application has requested that data be sent */
             /* see stcp_app_recv() */
+            
         }
         if (event & NETWORK_DATA){
             stcp_network_recv(sd, buffer, BUFFER_SIZE);
@@ -253,7 +254,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
                         case CSTATE_ESTB:{
                             // send ACK then goto CSTATE_CLSW
                             msghdr.th_flags = TH_ACK;
-                            msghdr.th_seq = htonl(ctx->seq_send++);
+                            msghdr.th_seq = htonl(ctx->seq_send);
                             msghdr.th_win = htons(STCP_MSS);
                             msghdr.th_ack = htonl(ctx->ack_send);
                             stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
@@ -278,7 +279,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
                         case CSTATE_WAIT2:{
                             // send ACK then goto CSTATE_CLSD
                             msghdr.th_flags = TH_ACK;
-                            msghdr.th_seq = htonl(ctx->seq_send++);
+                            msghdr.th_seq = htonl(ctx->seq_send);
                             msghdr.th_win = htons(STCP_MSS);
                             msghdr.th_ack = htonl(seq_recv + 1);
                             stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
