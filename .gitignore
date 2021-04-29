@@ -5,3 +5,5 @@ client
 proj2/*.c
 !proj2/proxy.c
 *.o
+server_
+client_

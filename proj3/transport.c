@@ -100,10 +100,10 @@ void transport_init(mysocket_t sd, bool_t is_active)
     ctx->rwnd = 3072; // fixed
     ctx->ssthresh = 4*STCP_MSS;
     ctx->rwnd_rmt = -1;
-    ctx->buf_send_cap = -1;
+    ctx->buf_send_cap = ctx->cwnd;
     ctx->buf_send_size = 0;
-    update_buf_send_cap(ctx);
     ctx->buf_send = malloc(ctx->buf_send_cap); // realloc()ed by congestion control
+    update_buf_send_cap(ctx);
     
     struct tcphdr msghdr;
     bzero(&msghdr, sizeof(struct tcphdr));
@@ -265,20 +265,22 @@ static void control_loop(mysocket_t sd, context_t *ctx)
         {
             /* the application has requested that data be sent */
             /* see stcp_app_recv() */
-            // printf("app: data transfer requested\n"); fflush(stdout);
+            printf("app: data transfer requested\n"); fflush(stdout);
+            printf("data in send-buffer: %dB\nreceiving data from app..\n", ctx->buf_send_size); fflush(stdout);
             char *buf_ptr = ctx->buf_send + ctx->buf_send_size;
+            printf("ctx->buf_send: 0x%x\n", ctx->buf_send); fflush(stdout);
             ctx->buf_send_size += stcp_app_recv(
                 sd,
                 ctx->buf_send + ctx->buf_send_size,
                 ctx->buf_send_cap - ctx->buf_send_size
             );
-            
+            printf("data in send-buffer: %dB\n", ctx->buf_send_size); fflush(stdout);
             // send up to MIN(cwnd, rwnd_mt) amount of data in each RT
             // i.e. send entire buffer
             while(ctx->buf_send_size > 0){
                 //send up to STCP_MSS amount of data in each packet
                 int data_size = MIN (ctx->buf_send_size, STCP_MSS);
-                
+                printf("sending %dB..\n",data_size); fflush(stdout);
                 bzero(&msghdr, sizeof(struct tcphdr));
                 msghdr.th_flags = TH_ACK;
                 msghdr.th_seq = htonl(ctx->seq_send);
@@ -293,6 +295,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
                 ctx->buf_send_size -= data_size;
                 
                 ctx->seq_send += data_size;
+                printf("data in send-buffer: %dB\n", ctx->buf_send_size); fflush(stdout);
             }
         }
         if (event & NETWORK_DATA){
@@ -377,13 +380,15 @@ static void control_loop(mysocket_t sd, context_t *ctx)
                 }
                 else{
                     if (data_size > 0){
-                        // data received; must send ACK
+                        // data received; send ACK to remote and pass data to app
                         bzero(&msghdr, sizeof(struct tcphdr));
                         msghdr.th_flags = TH_ACK;
                         msghdr.th_seq = htonl(ctx->seq_send);
                         msghdr.th_win = htons(ctx->rwnd);
                         msghdr.th_ack = htonl(ctx->ack_send);
                         stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
+                        
+                        stcp_app_send(sd, buffer + sizeof(struct tcphdr), data_size);
                     }
                     
                     switch (ctx->connection_state){
@@ -445,7 +450,9 @@ static void control_loop(mysocket_t sd, context_t *ctx)
 }
 
 void update_buf_send_cap(context_t *ctx){
-    ctx->buf_send_size = (ctx->rwnd_rmt > 0) ? MIN(STCP_MSS, ctx->rwnd_rmt) : ctx->cwnd;
+    ctx->buf_send_cap = (ctx->rwnd_rmt > 0) ? MIN(STCP_MSS, ctx->rwnd_rmt) : ctx->cwnd;
+    realloc(ctx->buf_send, ctx->buf_send_cap);
+    printf("send-buffer reallocated to 0x%x (cap: %dB)\n ", ctx->buf_send, ctx->buf_send_cap); fflush(stdout);
 }
 
 /**********************************************************************/
