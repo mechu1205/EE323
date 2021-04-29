@@ -7,3 +7,4 @@ proj2/*.c
 *.o
 server_
 client_
+rcvd
