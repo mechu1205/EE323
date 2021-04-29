@@ -38,6 +38,13 @@ enum {
     CSTATE_CLSG,
 };    /* obviously you should have more states */
 
+enum {
+    CONG_NOCONNECT = 0, // before connection is established
+    CONG_SLOWSTART,
+    CONG_AVOIDANCE,
+    CONG_FASTRECOV,
+};
+
 #define BUFFER_SIZE (65536)
 
 // TODO: Add your own variables helping your context management
@@ -52,11 +59,24 @@ typedef struct
     /* any other connection-wide global variables go here */
     tcp_seq seq_send;
     tcp_seq ack_send;
+    tcp_seq ack_recv_max;
+    
+    int congestion_state;
+    int cwnd;
+    int rwnd;
+    int ssthresh;
+    int rwnd_rmt;
+    
+    int buf_send_cap;
+    int buf_send_size;
+    char *buf_send;
+    
 } context_t;
 
 
 static void generate_initial_seq_num(context_t *ctx);
 static void control_loop(mysocket_t sd, context_t *ctx);
+void update_buf_send_cap(context_t *ctx);
 
 /* initialise the transport layer, and start the main loop, handling
  * any data from the peer or the application.  this function should not
@@ -70,10 +90,20 @@ void transport_init(mysocket_t sd, bool_t is_active)
     ctx = (context_t *) calloc(1, sizeof(context_t));
     // calloc initiliazes all bits to 0
     // thus connection_state is automatically set to CSTATE_CLSD
+    // congestion_state is set to CONG_NOCONNECT
     assert(ctx);
 
     generate_initial_seq_num(ctx);
     ctx->seq_send = ctx->initial_sequence_num;
+    
+    ctx->cwnd = STCP_MSS;
+    ctx->rwnd = 3072; // fixed
+    ctx->ssthresh = 4*STCP_MSS;
+    ctx->rwnd_rmt = -1;
+    ctx->buf_send_cap = -1;
+    ctx->buf_send_size = 0;
+    update_buf_send_cap(ctx);
+    ctx->buf_send = malloc(ctx->buf_send_cap); // realloc()ed by congestion control
     
     struct tcphdr msghdr;
     bzero(&msghdr, sizeof(struct tcphdr));
@@ -93,7 +123,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
         // if recv SYN, send SYN_ACK and wait for ACK
         msghdr.th_flags = TH_SYN;
         msghdr.th_seq = htonl(ctx->seq_send++);
-        msghdr.th_win = htons(STCP_MSS);
+        msghdr.th_win = htons(ctx->rwnd);
         if( stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL) < 0 ){
             //close
             free(ctx);
@@ -135,7 +165,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
                         bzero(&msghdr, sizeof(struct tcphdr));
                         msghdr.th_flags = TH_SYN|TH_ACK;
                         msghdr.th_seq = htonl(ctx->seq_send++);
-                        msghdr.th_win = htons(STCP_MSS);
+                        msghdr.th_win = htons(ctx->rwnd);
                         msghdr.th_ack = htonl(ctx->ack_send);
                         // printf("Sending..\n");
                         stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
@@ -151,7 +181,7 @@ void transport_init(mysocket_t sd, bool_t is_active)
                         bzero(&msghdr, sizeof(struct tcphdr));
                         msghdr.th_flags = TH_ACK;
                         msghdr.th_seq = htonl(ctx->seq_send);
-                        msghdr.th_win = htons(STCP_MSS);
+                        msghdr.th_win = htons(ctx->rwnd);
                         msghdr.th_ack = htonl(ctx->ack_send);
                         stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
                         ctx->connection_state = CSTATE_ESTB;
@@ -218,7 +248,7 @@ static void control_loop(mysocket_t sd, context_t *ctx)
         
     while (!ctx->done)
     {
-        // printf("start of a loop, waiting for event..\n");
+        // printf("start of a loop, waiting for event..\n"); fflush(stdout);
         // printf("Connection state: %d\n", ctx->connection_state);
         // bzero(buffer, BUFFER_SIZE);
         bzero(&msghdr, sizeof(struct tcphdr));
@@ -235,27 +265,81 @@ static void control_loop(mysocket_t sd, context_t *ctx)
         {
             /* the application has requested that data be sent */
             /* see stcp_app_recv() */
+            // printf("app: data transfer requested\n"); fflush(stdout);
+            char *buf_ptr = ctx->buf_send + ctx->buf_send_size;
+            ctx->buf_send_size += stcp_app_recv(
+                sd,
+                ctx->buf_send + ctx->buf_send_size,
+                ctx->buf_send_cap - ctx->buf_send_size
+            );
             
+            // send up to MIN(cwnd, rwnd_mt) amount of data in each RT
+            // i.e. send entire buffer
+            while(ctx->buf_send_size > 0){
+                //send up to STCP_MSS amount of data in each packet
+                int data_size = MIN (ctx->buf_send_size, STCP_MSS);
+                
+                bzero(&msghdr, sizeof(struct tcphdr));
+                msghdr.th_flags = TH_ACK;
+                msghdr.th_seq = htonl(ctx->seq_send);
+                msghdr.th_win = htons(ctx->rwnd);
+                msghdr.th_ack = htonl(ctx->ack_send);
+                
+                // bzero(buffer, BUFFER_SIZE);
+                memcpy(buffer, &msghdr, sizeof(struct tcphdr));
+                memcpy(buffer + sizeof(struct tcphdr), buf_ptr, data_size);
+                buf_ptr += data_size;
+                stcp_network_send(sd, buffer, sizeof(struct tcphdr) + data_size, NULL);
+                ctx->buf_send_size -= data_size;
+                
+                ctx->seq_send += data_size;
+            }
         }
         if (event & NETWORK_DATA){
-            stcp_network_recv(sd, buffer, BUFFER_SIZE);
+            int data_size = stcp_network_recv(sd, buffer, BUFFER_SIZE) - sizeof(struct tcphdr);
             uint8_t flags_recv = ((struct tcphdr *)buffer)->th_flags;
             tcp_seq ack_recv = ntohl(((struct tcphdr *)buffer)->th_ack);
             tcp_seq seq_recv = ntohl(((struct tcphdr *)buffer)->th_seq);
-            // printf("RECV: FLAGS[%d]ACK[%d]SEQ[%d]\n", flags_recv, ack_recv, seq_recv);
+            // printf("RECV: FLAGS[%d]ACK[%d]SEQ[%d]\n", flags_recv, ack_recv, seq_recv); fflush(stdout);
             // don't worry about packet loss or reordering
             
             if (flags_recv & TH_ACK){
-                ctx->ack_send = seq_recv + 1;
+                ctx->ack_send = seq_recv + data_size;
+                if (ack_recv > ctx->ack_recv_max){
+                    // update cwnd
+                    /* Since reliable channel is assumed,
+                    * the only case of cong_state change is
+                    * slow start to congestion avoidance
+                    */
+                    ctx->ack_recv_max = ack_recv;
+                    switch(ctx->congestion_state){
+                        case CONG_SLOWSTART:{
+                            ctx->cwnd += STCP_MSS;
+                            if (ctx->cwnd >= ctx->ssthresh)
+                                ctx->congestion_state = CONG_AVOIDANCE;
+                            break;
+                        }
+                        case CONG_AVOIDANCE:{
+                            ctx->cwnd += (int) (STCP_MSS * (STCP_MSS / ctx->cwnd));
+                            break;
+                        }
+                        default:{
+                            // should not be reached
+                        }
+                    }
+                    update_buf_send_cap(ctx);
+                }
+                
                 if (flags_recv & TH_FIN){
-                    // printf("FIN received, notifying the application..\n");
+                    ctx->ack_send ++;
                     stcp_fin_received(sd);
+                    // printf("FIN received, app notified\n"); fflush(stdout);
                     switch (ctx->connection_state){
                         case CSTATE_ESTB:{
-                            // send ACK then goto CSTATE_CLSW
+                            // send FIN|ACK then goto CSTATE_CLSW
                             msghdr.th_flags = TH_ACK;
                             msghdr.th_seq = htonl(ctx->seq_send);
-                            msghdr.th_win = htons(STCP_MSS);
+                            msghdr.th_win = htons(ctx->rwnd);
                             msghdr.th_ack = htonl(ctx->ack_send);
                             stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
                             ctx->connection_state = CSTATE_CLSW;
@@ -265,14 +349,14 @@ static void control_loop(mysocket_t sd, context_t *ctx)
                             // send ACK then goto CSTATE_CLSG(sim.close)
                             // or CSTATE_CLSD(non-sim close)
                             if (ack_recv == ctx->seq_send){
-                                ctx->connection_state = CSTATE_ESTB;
+                                ctx->connection_state = CSTATE_CLSD;
                             }else{
                                 msghdr.th_flags = TH_ACK;
                                 msghdr.th_seq = htonl(ctx->seq_send++);
-                                msghdr.th_win = htons(STCP_MSS);
+                                msghdr.th_win = htons(ctx->rwnd);
                                 msghdr.th_ack = htonl(seq_recv + 1);
                                 stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
-                                ctx->connection_state = CSTATE_ESTB;
+                                ctx->connection_state = CSTATE_CLSG;
                             }
                             break;
                         }
@@ -280,10 +364,10 @@ static void control_loop(mysocket_t sd, context_t *ctx)
                             // send ACK then goto CSTATE_CLSD
                             msghdr.th_flags = TH_ACK;
                             msghdr.th_seq = htonl(ctx->seq_send);
-                            msghdr.th_win = htons(STCP_MSS);
+                            msghdr.th_win = htons(ctx->rwnd);
                             msghdr.th_ack = htonl(seq_recv + 1);
                             stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
-                            ctx->connection_state = CSTATE_ESTB;
+                            ctx->connection_state = CSTATE_CLSD;
                             break;
                         }
                         default:{
@@ -292,6 +376,16 @@ static void control_loop(mysocket_t sd, context_t *ctx)
                     }
                 }
                 else{
+                    if (data_size > 0){
+                        // data received; must send ACK
+                        bzero(&msghdr, sizeof(struct tcphdr));
+                        msghdr.th_flags = TH_ACK;
+                        msghdr.th_seq = htonl(ctx->seq_send);
+                        msghdr.th_win = htons(ctx->rwnd);
+                        msghdr.th_ack = htonl(ctx->ack_send);
+                        stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
+                    }
+                    
                     switch (ctx->connection_state){
                         case CSTATE_WAIT1:{
                             // goto CSTATE_WAIT2
@@ -299,9 +393,13 @@ static void control_loop(mysocket_t sd, context_t *ctx)
                             break;
                         }
                         case CSTATE_CLSG:{
-                            // goto CSTAE_CLSD
+                            // goto CSTATE_CLSD
                             ctx->connection_state = CSTATE_CLSD;
                             break;
+                        }
+                        case CSTATE_LACK:{
+                            // goto CSTATE_CLSD
+                            ctx->connection_state = CSTATE_CLSD;
                         }
                         default:{
                             break;
@@ -311,22 +409,44 @@ static void control_loop(mysocket_t sd, context_t *ctx)
             }
         }
         else if (event & APP_CLOSE_REQUESTED){
-            // send FIN|ACK then goto CSTATE_WAIT1
-            msghdr.th_flags = TH_FIN|TH_ACK;
-            msghdr.th_seq = htonl(ctx->seq_send++);
-            msghdr.th_win = htons(STCP_MSS);
-            msghdr.th_ack = htonl(ctx->ack_send);
-            stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
-            ctx->connection_state = CSTATE_WAIT1;
+            // printf("app: close requested\n"); fflush(stdout);
+            switch (ctx->connection_state){
+                case CSTATE_ESTB:{
+                    // send FIN|ACK then goto CSTATE_WAIT1
+                    msghdr.th_flags = TH_FIN|TH_ACK;
+                    msghdr.th_seq = htonl(ctx->seq_send++);
+                    msghdr.th_win = htons(ctx->rwnd);
+                    msghdr.th_ack = htonl(ctx->ack_send);
+                    stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
+                    ctx->connection_state = CSTATE_WAIT1;
+                    break;
+                }
+                case CSTATE_CLSW:{
+                    // send FIN|ACK then goto CSTATE_LACK
+                    msghdr.th_flags = TH_FIN|TH_ACK;
+                    msghdr.th_seq = htonl(ctx->seq_send++);
+                    msghdr.th_win = htons(ctx->rwnd);
+                    msghdr.th_ack = htonl(ctx->ack_send);
+                    stcp_network_send(sd, &msghdr, sizeof(struct tcphdr), NULL);
+                    ctx->connection_state = CSTATE_LACK;
+                    break;
+                }
+                default:{
+                    break;
+                }
+            }
         }
         
         ctx->done = (ctx->connection_state == CSTATE_CLSD)? TRUE: FALSE;
-        /* etc. */
+        // printf("connection state: %d\n", ctx->connection_state); fflush(stdout);
     }
     // printf("Connection Closed\n");
     free(buffer);
 }
 
+void update_buf_send_cap(context_t *ctx){
+    ctx->buf_send_size = (ctx->rwnd_rmt > 0) ? MIN(STCP_MSS, ctx->rwnd_rmt) : ctx->cwnd;
+}
 
 /**********************************************************************/
 /* our_dprintf
