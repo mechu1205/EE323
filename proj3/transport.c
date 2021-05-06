@@ -337,14 +337,21 @@ static void control_loop(mysocket_t sd, context_t *ctx)
                      * Therefore buf_send_start is compared to buf_send_end to handle FIN arrival.
                      */
                     if (ctx->buf_send_start > ctx->buf_send_end) ctx->buf_send_start = ctx->buf_send_end;
-                    if (ctx->buf_send_start > ctx->buf_send_cap/2){
-                        // printf("send-buffer start: %d end: %d cap: %d\n", ctx->buf_send_start, ctx->buf_send_end, ctx->buf_send_cap);
-                        // printf("shifting data to make room in send-buffer..\n");
-                        memcpy(ctx->buf_send, ctx->buf_send + ctx->buf_send_start, ctx->buf_send_end - ctx->buf_send_start);
-                        ctx->buf_send_end -= ctx->buf_send_start;
-                        ctx->buf_send_start = 0;
-                        // printf("shift complete\n");
+                    // if (ctx->buf_send_start > ctx->buf_send_cap/2){
+                    //     // printf("send-buffer start: %d end: %d cap: %d\n", ctx->buf_send_start, ctx->buf_send_end, ctx->buf_send_cap);
+                    //     // printf("shifting data to make room in send-buffer..\n");
+                    //     memcpy(ctx->buf_send, ctx->buf_send + ctx->buf_send_start, ctx->buf_send_end - ctx->buf_send_start);
+                    //     ctx->buf_send_end -= ctx->buf_send_start;
+                    //     ctx->buf_send_start = 0;
+                    //     // printf("shift complete\n");
+                    // }
+                    for(int buf_send_offset = ctx->buf_send_start;
+                        buf_send_offset < ctx->buf_send_end;
+                        buf_send_offset++){
+                        ctx->buf_send[buf_send_offset - ctx->buf_send_start] = ctx->buf_send[buf_send_offset];
                     }
+                    ctx->buf_send_end -= ctx->buf_send_start;
+                    ctx->buf_send_start = 0;
                     // printf("data on-the-fly: %dB\n", ctx->buf_send_end - ctx->buf_send_start);
                     ctx->ack_recv_max = ack_recv;
                     switch(ctx->congestion_state){
